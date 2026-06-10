@@ -21,7 +21,12 @@
 
     <el-row :gutter="16" style="margin-top: 16px;">
       <el-col :span="6" v-for="material in materials" :key="material.id">
-        <el-card class="material-card" :body-style="{ padding: 0 }">
+        <el-card 
+          :id="`material-card-${material.id}`"
+          class="material-card" 
+          :class="{ 'highlighted': highlightedId === material.id }"
+          :body-style="{ padding: 0 }"
+        >
           <div class="material-photo">
             <img v-if="material.photo" :src="getImageUrl(material.photo)" alt="" />
             <div v-else class="photo-placeholder">
@@ -172,13 +177,16 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, nextTick } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { materialApi, getImageUrl, formatDate } from '@/api'
 import { Plus, Picture, UploadFilled, Link, Warning } from '@element-plus/icons-vue'
 
+const route = useRoute()
 const loading = ref(false)
 const materials = ref([])
+const highlightedId = ref(null)
 const dialogVisible = ref(false)
 const isEdit = ref(false)
 const editId = ref(null)
@@ -219,11 +227,31 @@ const rules = {
   purchase_date: [{ required: true, message: '请选择采购日期', trigger: 'change' }]
 }
 
+const scrollToMaterial = async (id) => {
+  await nextTick()
+  const card = document.getElementById(`material-card-${id}`)
+  if (card) {
+    card.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    highlightedId.value = id
+    setTimeout(() => {
+      highlightedId.value = null
+    }, 3000)
+  }
+}
+
 const fetchMaterials = async () => {
   loading.value = true
   try {
     const res = await materialApi.list(filters)
     materials.value = res.data
+    
+    const highlightId = route.query.highlight
+    if (highlightId) {
+      const id = parseInt(highlightId)
+      if (materials.value.some(m => m.id === id)) {
+        scrollToMaterial(id)
+      }
+    }
   } finally {
     loading.value = false
   }
@@ -495,5 +523,20 @@ onMounted(fetchMaterials)
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+.highlighted {
+  animation: highlight-pulse 1.5s ease-in-out 2;
+  border: 3px solid #e91e63 !important;
+  box-shadow: 0 0 20px rgba(233, 30, 99, 0.4) !important;
+}
+
+@keyframes highlight-pulse {
+  0%, 100% {
+    box-shadow: 0 0 20px rgba(233, 30, 99, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 40px rgba(233, 30, 99, 0.8);
+  }
 }
 </style>

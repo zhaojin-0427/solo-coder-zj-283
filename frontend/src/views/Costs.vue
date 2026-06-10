@@ -367,7 +367,7 @@ const goToDetail = (id) => {
 }
 
 const goToMaterial = (id) => {
-  router.push('/materials')
+  router.push({ path: '/materials', query: { highlight: id } })
 }
 
 const goToProject = (id) => {

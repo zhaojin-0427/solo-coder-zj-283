@@ -34,7 +34,17 @@ class Material(db.Model):
     
     @property
     def used_by_projects(self):
-        return [{'project_id': usage.project_id, 'project_name': usage.project.name} for usage in self.usages]
+        seen = set()
+        result = []
+        for usage in self.usages:
+            if usage.project_id not in seen:
+                seen.add(usage.project_id)
+                result.append({'project_id': usage.project_id, 'project_name': usage.project.name})
+        return result
+    
+    @property
+    def used_project_count(self):
+        return len(self.used_by_projects)
     
     def to_dict(self):
         usage_rate = 1 - (self.remaining_length / self.total_length) if self.total_length > 0 else 0
