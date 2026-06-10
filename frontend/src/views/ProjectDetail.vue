@@ -344,6 +344,7 @@ const materialForm = reactive({
 const photoForm = reactive({
   stage: '',
   stage_order: 0,
+  photo: null,
   description: '',
   experience: ''
 })
@@ -440,6 +441,7 @@ const openPhotoDialog = () => {
   Object.assign(photoForm, {
     stage: '',
     stage_order: project.value?.process_photos?.length || 0,
+    photo: null,
     description: '',
     experience: ''
   })
@@ -448,6 +450,7 @@ const openPhotoDialog = () => {
 
 const handlePhotoChange = (uploadFile) => {
   photoFile.value = uploadFile.raw
+  photoForm.photo = uploadFile.raw
   photoPreviewUrl.value = URL.createObjectURL(uploadFile.raw)
 }
 

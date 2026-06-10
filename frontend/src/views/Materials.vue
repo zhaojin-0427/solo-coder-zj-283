@@ -149,7 +149,7 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { materialApi, getImageUrl } from '@/api'
+import { materialApi, getImageUrl, formatDate } from '@/api'
 import { Plus, Picture, UploadFilled } from '@element-plus/icons-vue'
 
 const loading = ref(false)
@@ -261,7 +261,7 @@ const submitForm = async () => {
   Object.keys(form).forEach(key => {
     if (form[key] !== null && form[key] !== undefined) {
       if (key === 'purchase_date') {
-        formData.append(key, form[key].toISOString().split('T')[0])
+        formData.append(key, formatDate(form[key]))
       } else {
         formData.append(key, form[key])
       }

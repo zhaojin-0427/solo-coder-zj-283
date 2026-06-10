@@ -127,7 +127,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { projectApi } from '@/api'
+import { projectApi, formatDate } from '@/api'
 import { Plus, Collection, Picture, Money, ArrowRight } from '@element-plus/icons-vue'
 
 const router = useRouter()
@@ -204,8 +204,8 @@ const submitForm = async () => {
   
   const data = {
     ...form,
-    start_date: form.start_date.toISOString().split('T')[0],
-    end_date: form.end_date ? form.end_date.toISOString().split('T')[0] : null
+    start_date: formatDate(form.start_date),
+    end_date: form.end_date ? formatDate(form.end_date) : null
   }
   
   try {
