@@ -1,5 +1,131 @@
 <template>
   <div class="costs-page">
+    <el-card v-if="anomaliesData && anomaliesData.total_count > 0" class="anomalies-card">
+      <template #header>
+        <div class="anomalies-header">
+          <div class="anomalies-title">
+            <el-icon :size="20" color="#f44336"><Warning /></el-icon>
+            <span>异常数据提示区（共发现 {{ anomaliesData.total_count }} 个问题）</span>
+          </div>
+          <div class="anomalies-tabs">
+            <el-tag 
+              v-for="(count, key) in anomaliesData.summary" 
+              :key="key"
+              :type="count > 0 ? 'danger' : 'info'"
+              :effect="count > 0 ? 'light' : 'plain'"
+              class="anomaly-tag"
+            >
+              {{ anomalyLabels[key] }}: {{ count }}
+            </el-tag>
+          </div>
+        </div>
+      </template>
+      <el-row :gutter="16">
+        <el-col :span="12" v-if="anomaliesData.anomalies.insufficient_stock.length > 0">
+          <div class="anomaly-section">
+            <h4 class="anomaly-section-title">
+              <el-icon color="#ff9800"><Warning /></el-icon>
+              库存不足
+            </h4>
+            <div 
+              v-for="item in anomaliesData.anomalies.insufficient_stock" 
+              :key="`stock-${item.material_id}`"
+              class="anomaly-item"
+            >
+              <span class="anomaly-message">{{ item.message }}</span>
+              <el-button type="primary" link size="small" @click="goToMaterial(item.material_id)">
+                查看材料
+              </el-button>
+            </div>
+          </div>
+        </el-col>
+        <el-col :span="12" v-if="anomaliesData.anomalies.over_target.length > 0">
+          <div class="anomaly-section">
+            <h4 class="anomaly-section-title">
+              <el-icon color="#f44336"><Warning /></el-icon>
+              进度超额
+            </h4>
+            <div 
+              v-for="item in anomaliesData.anomalies.over_target" 
+              :key="`target-${item.project_id}`"
+              class="anomaly-item"
+            >
+              <span class="anomaly-message">{{ item.message }}</span>
+              <el-button type="primary" link size="small" @click="goToProject(item.project_id)">
+                查看作品
+              </el-button>
+            </div>
+          </div>
+        </el-col>
+        <el-col :span="12" v-if="anomaliesData.anomalies.material_conflicts.length > 0">
+          <div class="anomaly-section">
+            <h4 class="anomaly-section-title">
+              <el-icon color="#e91e63"><Warning /></el-icon>
+              材料引用冲突
+            </h4>
+            <div 
+              v-for="item in anomaliesData.anomalies.material_conflicts" 
+              :key="`conflict-${item.material_id}`"
+              class="anomaly-item"
+            >
+              <span class="anomaly-message">{{ item.message }}</span>
+              <div class="anomaly-actions">
+                <el-button type="primary" link size="small" @click="goToMaterial(item.material_id)">
+                  查看材料
+                </el-button>
+                <el-button 
+                  v-for="p in item.used_by_projects" 
+                  :key="p.project_id"
+                  type="warning" 
+                  link 
+                  size="small" 
+                  @click="goToProject(p.project_id)"
+                >
+                  作品: {{ p.project_name }}
+                </el-button>
+              </div>
+            </div>
+          </div>
+        </el-col>
+        <el-col :span="12" v-if="anomaliesData.anomalies.negative_inventory.length > 0">
+          <div class="anomaly-section">
+            <h4 class="anomaly-section-title">
+              <el-icon color="#9c27b0"><Warning /></el-icon>
+              负库存
+            </h4>
+            <div 
+              v-for="item in anomaliesData.anomalies.negative_inventory" 
+              :key="`negative-${item.material_id}`"
+              class="anomaly-item"
+            >
+              <span class="anomaly-message">{{ item.message }}</span>
+              <el-button type="primary" link size="small" @click="goToMaterial(item.material_id)">
+                查看材料
+              </el-button>
+            </div>
+          </div>
+        </el-col>
+        <el-col :span="12" v-if="anomaliesData.anomalies.over_usage_rate.length > 0">
+          <div class="anomaly-section">
+            <h4 class="anomaly-section-title">
+              <el-icon color="#673ab7"><Warning /></el-icon>
+              使用率超过100%
+            </h4>
+            <div 
+              v-for="item in anomaliesData.anomalies.over_usage_rate" 
+              :key="`usage-${item.material_id}`"
+              class="anomaly-item"
+            >
+              <span class="anomaly-message">{{ item.message }}</span>
+              <el-button type="primary" link size="small" @click="goToMaterial(item.material_id)">
+                查看材料
+              </el-button>
+            </div>
+          </div>
+        </el-col>
+      </el-row>
+    </el-card>
+
     <el-card class="summary-card">
       <el-row :gutter="20">
         <el-col :span="8">
@@ -122,6 +248,7 @@ import {
   Filler
 } from 'chart.js'
 import { projectApi, statisticsApi, materialApi } from '@/api'
+import { Warning } from '@element-plus/icons-vue'
 
 ChartJS.register(
   CategoryScale,
@@ -140,6 +267,15 @@ const projects = ref([])
 const overview = ref({})
 const costChartData = ref(null)
 const materialCosts = ref([])
+const anomaliesData = ref(null)
+
+const anomalyLabels = {
+  insufficient_stock: '库存不足',
+  over_target: '进度超额',
+  material_conflicts: '引用冲突',
+  negative_inventory: '负库存',
+  over_usage_rate: '使用率超限'
+}
 
 const statusMap = {
   'in_progress': '进行中',
@@ -164,11 +300,14 @@ const chartOptions = {
 const fetchData = async () => {
   loading.value = true
   try {
-    const [projectsRes, overviewRes, costRes] = await Promise.all([
+    const [projectsRes, overviewRes, costRes, anomaliesRes] = await Promise.all([
       projectApi.list(),
       statisticsApi.overview(),
-      statisticsApi.costTrend()
+      statisticsApi.costTrend(),
+      statisticsApi.anomalies()
     ])
+    
+    anomaliesData.value = anomaliesRes.data
     
     projects.value = projectsRes.data.filter(p => p.material_count > 0)
     overview.value = overviewRes.data
@@ -227,6 +366,14 @@ const goToDetail = (id) => {
   router.push(`/projects/${id}`)
 }
 
+const goToMaterial = (id) => {
+  router.push('/materials')
+}
+
+const goToProject = (id) => {
+  router.push(`/projects/${id}`)
+}
+
 onMounted(fetchData)
 </script>
 
@@ -280,5 +427,79 @@ onMounted(fetchData)
 
 .chart-container {
   height: 300px;
+}
+
+.anomalies-card {
+  margin-bottom: 20px;
+  border: 1px solid #f44336;
+}
+
+.anomalies-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.anomalies-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: #f44336;
+}
+
+.anomalies-tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.anomaly-tag {
+  cursor: default;
+}
+
+.anomaly-section {
+  padding: 12px;
+  background: #fff8f8;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+
+.anomaly-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 12px 0;
+  color: #333;
+}
+
+.anomaly-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 8px 12px;
+  background: white;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  border-left: 3px solid #f44336;
+}
+
+.anomaly-item:last-child {
+  margin-bottom: 0;
+}
+
+.anomaly-message {
+  font-size: 13px;
+  color: #666;
+  flex: 1;
+}
+
+.anomaly-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-left: 12px;
 }
 </style>

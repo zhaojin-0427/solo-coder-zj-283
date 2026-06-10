@@ -49,12 +49,15 @@
           <div class="project-progress">
             <div class="progress-label">
               <span>进度</span>
-              <span>{{ project.completed_quantity }} / {{ project.target_quantity }} 件</span>
+              <span>
+                {{ project.completed_quantity }} / {{ project.target_quantity }} 件
+                <el-tag v-if="project.is_over_target" size="small" type="danger" class="over-tag">超额</el-tag>
+              </span>
             </div>
             <el-progress 
-              :percentage="Math.round(project.completed_quantity / project.target_quantity * 100)" 
+              :percentage="project.progress_percentage" 
               :stroke-width="8"
-              color="#e91e63"
+              :color="project.is_over_target ? '#f44336' : '#e91e63'"
             />
           </div>
           <div class="project-footer">
@@ -95,12 +98,27 @@
         <el-row :gutter="16">
           <el-col :span="12">
             <el-form-item label="目标数量" prop="target_quantity">
-              <el-input-number v-model="form.target_quantity" :min="1" style="width: 100%;" />
+              <el-input-number 
+                v-model="form.target_quantity" 
+                :min="1" 
+                style="width: 100%;"
+                @change="validateQuantity"
+              />
             </el-form-item>
           </el-col>
           <el-col :span="12">
             <el-form-item label="已完成数" prop="completed_quantity">
-              <el-input-number v-model="form.completed_quantity" :min="0" style="width: 100%;" />
+              <el-input-number 
+                v-model="form.completed_quantity" 
+                :min="0" 
+                :max="form.target_quantity"
+                style="width: 100%;"
+                @change="validateQuantity"
+              />
+              <div v-if="form.completed_quantity > form.target_quantity" class="quantity-hint">
+                <el-icon color="#f44336"><Warning /></el-icon>
+                已完成数不能超过目标数量
+              </div>
             </el-form-item>
           </el-col>
         </el-row>
@@ -128,7 +146,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { projectApi, formatDate } from '@/api'
-import { Plus, Collection, Picture, Money, ArrowRight } from '@element-plus/icons-vue'
+import { Plus, Collection, Picture, Money, ArrowRight, Warning } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const projects = ref([])
@@ -165,13 +183,30 @@ const form = reactive({
   notes: ''
 })
 
+const validateCompletedQuantity = (rule, value, callback) => {
+  if (value > form.target_quantity) {
+    callback(new Error('已完成数量不能超过目标数量'))
+  } else {
+    callback()
+  }
+}
+
 const rules = {
   name: [{ required: true, message: '请输入作品名称', trigger: 'blur' }],
   project_type: [{ required: true, message: '请选择作品类型', trigger: 'change' }],
   start_date: [{ required: true, message: '请选择开始日期', trigger: 'change' }],
   target_quantity: [{ required: true, message: '请输入目标数量', trigger: 'blur' }],
-  completed_quantity: [{ required: true, message: '请输入已完成数量', trigger: 'blur' }],
+  completed_quantity: [
+    { required: true, message: '请输入已完成数量', trigger: 'blur' },
+    { validator: validateCompletedQuantity, trigger: 'change' }
+  ],
   status: [{ required: true, message: '请选择状态', trigger: 'change' }]
+}
+
+const validateQuantity = () => {
+  if (formRef.value) {
+    formRef.value.validateField('completed_quantity')
+  }
 }
 
 const fetchProjects = async () => {
@@ -215,7 +250,7 @@ const submitForm = async () => {
     fetchProjects()
     router.push(`/projects/${res.data.id}`)
   } catch (err) {
-    ElMessage.error('创建失败')
+    ElMessage.error(err.response?.data?.error || '创建失败')
   }
 }
 
@@ -311,5 +346,18 @@ onMounted(fetchProjects)
 .date {
   font-size: 12px;
   color: #999;
+}
+
+.over-tag {
+  margin-left: 8px;
+}
+
+.quantity-hint {
+  font-size: 12px;
+  color: #f44336;
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 </style>

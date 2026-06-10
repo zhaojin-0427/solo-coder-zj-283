@@ -109,10 +109,21 @@ def update_material(id):
     if 'width' in data:
         material.width = float(data['width'])
     if 'total_length' in data:
+        new_total = float(data['total_length'])
+        used_total = material.used_length_total
+        
+        if new_total < used_total:
+            return jsonify({
+                'error': f'材料总长度不能低于已被作品占用的长度 {used_total:.2f} 米。当前已被 {len(material.usages)} 个作品使用。'
+            }), 400
+        
         old_total = material.total_length
-        diff = float(data['total_length']) - old_total
-        material.total_length = float(data['total_length'])
+        diff = new_total - old_total
+        material.total_length = new_total
         material.remaining_length += diff
+        
+        if material.remaining_length < 0:
+            material.remaining_length = 0
     if 'unit_price' in data:
         material.unit_price = float(data['unit_price'])
     if 'supplier' in data:
@@ -129,6 +140,14 @@ def update_material(id):
 @app.route('/api/materials/<int:id>', methods=['DELETE'])
 def delete_material(id):
     material = Material.query.get_or_404(id)
+    
+    if material.is_used:
+        project_names = [p['project_name'] for p in material.used_by_projects]
+        return jsonify({
+            'error': f'该材料已被作品使用，无法直接删除。请先在以下作品中移除用料：{", ".join(project_names)}',
+            'used_by_projects': material.used_by_projects
+        }), 400
+    
     if material.photo:
         old_path = os.path.join(app.config['UPLOAD_FOLDER'], material.photo)
         if os.path.exists(old_path):
@@ -165,6 +184,15 @@ def get_project(id):
 @app.route('/api/projects', methods=['POST'])
 def create_project():
     data = request.get_json()
+    
+    target_quantity = int(data.get('target_quantity', 1))
+    completed_quantity = int(data.get('completed_quantity', 0))
+    
+    if completed_quantity > target_quantity:
+        return jsonify({
+            'error': f'已完成数量 ({completed_quantity}) 不能超过目标数量 ({target_quantity})'
+        }), 400
+    
     project = Project(
         name=data['name'],
         project_type=data['project_type'],
@@ -172,8 +200,8 @@ def create_project():
         start_date=date.fromisoformat(data['start_date']),
         end_date=date.fromisoformat(data['end_date']) if data.get('end_date') else None,
         status=data.get('status', 'in_progress'),
-        target_quantity=int(data.get('target_quantity', 1)),
-        completed_quantity=int(data.get('completed_quantity', 0)),
+        target_quantity=target_quantity,
+        completed_quantity=completed_quantity,
         notes=data.get('notes')
     )
     db.session.add(project)
@@ -198,10 +226,23 @@ def update_project(id):
         project.end_date = date.fromisoformat(data['end_date']) if data['end_date'] else None
     if 'status' in data:
         project.status = data['status']
+    
+    target_quantity = project.target_quantity
+    completed_quantity = project.completed_quantity
+    
     if 'target_quantity' in data:
-        project.target_quantity = int(data['target_quantity'])
+        target_quantity = int(data['target_quantity'])
     if 'completed_quantity' in data:
-        project.completed_quantity = int(data['completed_quantity'])
+        completed_quantity = int(data['completed_quantity'])
+    
+    if completed_quantity > target_quantity:
+        return jsonify({
+            'error': f'已完成数量 ({completed_quantity}) 不能超过目标数量 ({target_quantity})'
+        }), 400
+    
+    project.target_quantity = target_quantity
+    project.completed_quantity = completed_quantity
+    
     if 'notes' in data:
         project.notes = data['notes']
     
@@ -482,6 +523,99 @@ def get_cost_trend():
         costs.append(round(total, 2))
     
     return jsonify({'months': months, 'costs': costs})
+
+
+@app.route('/api/statistics/anomalies', methods=['GET'])
+def get_anomalies():
+    anomalies = {
+        'insufficient_stock': [],
+        'over_target': [],
+        'material_conflicts': [],
+        'negative_inventory': [],
+        'over_usage_rate': []
+    }
+    
+    materials = Material.query.all()
+    for m in materials:
+        if m.remaining_length <= 0:
+            anomalies['insufficient_stock'].append({
+                'type': 'insufficient_stock',
+                'material_id': m.id,
+                'material_name': m.name,
+                'remaining_length': m.remaining_length,
+                'total_length': m.total_length,
+                'message': f'材料"{m.name}"库存已用尽'
+            })
+        elif m.remaining_length < 1:
+            anomalies['insufficient_stock'].append({
+                'type': 'insufficient_stock',
+                'material_id': m.id,
+                'material_name': m.name,
+                'remaining_length': m.remaining_length,
+                'total_length': m.total_length,
+                'message': f'材料"{m.name}"库存不足，仅剩 {m.remaining_length:.2f} 米'
+            })
+        
+        if m.remaining_length < 0:
+            anomalies['negative_inventory'].append({
+                'type': 'negative_inventory',
+                'material_id': m.id,
+                'material_name': m.name,
+                'remaining_length': m.remaining_length,
+                'total_value': m.remaining_length * m.unit_price,
+                'message': f'材料"{m.name}"出现负库存: {m.remaining_length:.2f} 米'
+            })
+        
+        usage_rate = 1 - (m.remaining_length / m.total_length) if m.total_length > 0 else 0
+        if usage_rate > 1:
+            anomalies['over_usage_rate'].append({
+                'type': 'over_usage_rate',
+                'material_id': m.id,
+                'material_name': m.name,
+                'usage_rate': usage_rate * 100,
+                'message': f'材料"{m.name}"使用率超过 100%: {(usage_rate * 100):.1f}%'
+            })
+        
+        if m.total_length < m.used_length_total:
+            anomalies['material_conflicts'].append({
+                'type': 'material_conflict',
+                'material_id': m.id,
+                'material_name': m.name,
+                'total_length': m.total_length,
+                'used_length_total': m.used_length_total,
+                'used_by_projects': m.used_by_projects,
+                'message': f'材料"{m.name}"总长度 ({m.total_length:.2f}m) 小于已使用长度 ({m.used_length_total:.2f}m)'
+            })
+    
+    projects = Project.query.all()
+    for p in projects:
+        if p.completed_quantity > p.target_quantity:
+            anomalies['over_target'].append({
+                'type': 'over_target',
+                'project_id': p.id,
+                'project_name': p.name,
+                'completed_quantity': p.completed_quantity,
+                'target_quantity': p.target_quantity,
+                'message': f'作品"{p.name}"完成数量 ({p.completed_quantity}) 超过目标数量 ({p.target_quantity})'
+            })
+    
+    total_count = (len(anomalies['insufficient_stock']) + 
+                   len(anomalies['over_target']) + 
+                   len(anomalies['material_conflicts']) + 
+                   len(anomalies['negative_inventory']) + 
+                   len(anomalies['over_usage_rate']))
+    
+    return jsonify({
+        'total_count': total_count,
+        'anomalies': anomalies,
+        'summary': {
+            'insufficient_stock': len(anomalies['insufficient_stock']),
+            'over_target': len(anomalies['over_target']),
+            'material_conflicts': len(anomalies['material_conflicts']),
+            'negative_inventory': len(anomalies['negative_inventory']),
+            'over_usage_rate': len(anomalies['over_usage_rate'])
+        }
+    })
 
 
 if __name__ == '__main__':

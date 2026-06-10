@@ -32,10 +32,19 @@
             </div>
           </div>
           <div class="material-info">
-            <div class="material-name">{{ material.name }}</div>
+            <div class="material-name">
+              {{ material.name }}
+              <el-tag v-if="material.is_used" size="small" type="warning" class="used-tag">
+                <el-icon><Link /></el-icon>
+                已被使用
+              </el-tag>
+            </div>
             <div class="material-meta">
               <el-tag size="small" type="info">{{ material.material_type }}</el-tag>
               <span v-if="material.color_code" class="color-code">#{{ material.color_code }}</span>
+              <span v-if="material.is_used" class="usage-info">
+                被 {{ material.used_by_projects.length }} 个作品使用
+              </span>
             </div>
             <div class="material-details">
               <div class="detail-item">
@@ -58,7 +67,14 @@
             />
             <div class="material-actions">
               <el-button type="primary" link @click="editMaterial(material)">编辑</el-button>
-              <el-button type="danger" link @click="deleteMaterial(material)">删除</el-button>
+              <el-button 
+                type="danger" 
+                link 
+                :disabled="material.is_used"
+                @click="deleteMaterial(material)"
+              >
+                {{ material.is_used ? '已被引用' : '删除' }}
+              </el-button>
             </div>
           </div>
         </el-card>
@@ -96,7 +112,16 @@
         <el-row :gutter="16">
           <el-col :span="12">
             <el-form-item label="总长度(米)" prop="total_length">
-              <el-input-number v-model="form.total_length" :min="0.1" :step="0.1" style="width: 100%;" />
+              <el-input-number 
+                v-model="form.total_length" 
+                :min="isEdit ? editingMaterial.used_length_total : 0.1" 
+                :step="0.1" 
+                style="width: 100%;" 
+              />
+              <div v-if="isEdit && editingMaterial.is_used" class="length-hint">
+                <el-icon color="#e6a23c"><Warning /></el-icon>
+                已被作品占用 {{ editingMaterial.used_length_total.toFixed(2) }} 米，不能低于此值
+              </div>
             </el-form-item>
           </el-col>
           <el-col :span="12">
@@ -150,7 +175,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { materialApi, getImageUrl, formatDate } from '@/api'
-import { Plus, Picture, UploadFilled } from '@element-plus/icons-vue'
+import { Plus, Picture, UploadFilled, Link, Warning } from '@element-plus/icons-vue'
 
 const loading = ref(false)
 const materials = ref([])
@@ -160,6 +185,11 @@ const editId = ref(null)
 const formRef = ref(null)
 const photoFile = ref(null)
 const previewUrl = ref('')
+const editingMaterial = ref({
+  is_used: false,
+  used_length_total: 0,
+  used_by_projects: []
+})
 
 const filters = reactive({
   search: '',
@@ -204,6 +234,11 @@ const openDialog = () => {
   editId.value = null
   photoFile.value = null
   previewUrl.value = ''
+  editingMaterial.value = {
+    is_used: false,
+    used_length_total: 0,
+    used_by_projects: []
+  }
   Object.assign(form, {
     name: '',
     material_type: '',
@@ -223,6 +258,11 @@ const editMaterial = (material) => {
   editId.value = material.id
   photoFile.value = null
   previewUrl.value = material.photo ? getImageUrl(material.photo) : ''
+  editingMaterial.value = {
+    is_used: material.is_used,
+    used_length_total: material.used_length_total,
+    used_by_projects: material.used_by_projects
+  }
   Object.assign(form, {
     name: material.name,
     material_type: material.material_type,
@@ -238,6 +278,19 @@ const editMaterial = (material) => {
 }
 
 const deleteMaterial = async (material) => {
+  if (material.is_used) {
+    const projectNames = material.used_by_projects.map(p => p.project_name).join('、')
+    ElMessageBox.alert(
+      `该材料已被作品"${projectNames}"使用，无法直接删除。\n\n请先进入对应作品详情页，移除该材料的使用记录后再删除。`,
+      '无法删除',
+      {
+        type: 'warning',
+        confirmButtonText: '知道了'
+      }
+    )
+    return
+  }
+  
   try {
     await ElMessageBox.confirm(`确定删除材料"${material.name}"吗？`, '提示', {
       type: 'warning'
@@ -245,7 +298,11 @@ const deleteMaterial = async (material) => {
     await materialApi.delete(material.id)
     ElMessage.success('删除成功')
     fetchMaterials()
-  } catch {}
+  } catch (err) {
+    if (err.response?.data?.error) {
+      ElMessage.error(err.response.data.error)
+    }
+  }
 }
 
 const handlePhotoChange = (uploadFile) => {
@@ -416,5 +473,27 @@ onMounted(fetchMaterials)
   max-width: 200px;
   max-height: 200px;
   object-fit: contain;
+}
+
+.used-tag {
+  margin-left: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.usage-info {
+  font-size: 12px;
+  color: #e6a23c;
+  margin-left: 8px;
+}
+
+.length-hint {
+  font-size: 12px;
+  color: #e6a23c;
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 </style>

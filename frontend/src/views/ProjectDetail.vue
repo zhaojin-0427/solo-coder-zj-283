@@ -131,7 +131,21 @@
           </div>
           <div class="info-item" v-if="project">
             <div class="info-label">制作进度</div>
-            <div class="info-value">{{ project.completed_quantity }} / {{ project.target_quantity }} 件</div>
+            <div class="info-value">
+              {{ project.completed_quantity }} / {{ project.target_quantity }} 件
+              <el-tag v-if="project.is_over_target" size="small" type="danger" style="margin-left: 8px;">超额</el-tag>
+            </div>
+          </div>
+          <div class="info-item" v-if="project">
+            <div class="info-label">完成比例</div>
+            <div class="info-value">
+              <el-progress 
+                :percentage="project.progress_percentage" 
+                :stroke-width="8"
+                :color="project.is_over_target ? '#f44336' : '#e91e63'"
+                style="width: 200px;"
+              />
+            </div>
           </div>
           <div class="info-item" v-if="project">
             <div class="info-label">单件材料成本</div>
@@ -260,12 +274,27 @@
         <el-row :gutter="16">
           <el-col :span="12">
             <el-form-item label="目标数量" prop="target_quantity">
-              <el-input-number v-model="editForm.target_quantity" :min="1" style="width: 100%;" />
+              <el-input-number 
+                v-model="editForm.target_quantity" 
+                :min="1" 
+                style="width: 100%;"
+                @change="validateEditQuantity"
+              />
             </el-form-item>
           </el-col>
           <el-col :span="12">
             <el-form-item label="已完成数" prop="completed_quantity">
-              <el-input-number v-model="editForm.completed_quantity" :min="0" style="width: 100%;" />
+              <el-input-number 
+                v-model="editForm.completed_quantity" 
+                :min="0" 
+                :max="editForm.target_quantity"
+                style="width: 100%;"
+                @change="validateEditQuantity"
+              />
+              <div v-if="editForm.completed_quantity > editForm.target_quantity" class="quantity-hint">
+                <el-icon color="#f44336"><Warning /></el-icon>
+                已完成数不能超过目标数量
+              </div>
             </el-form-item>
           </el-col>
         </el-row>
@@ -289,7 +318,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { projectApi, materialApi, materialUsageApi, processPhotoApi, getImageUrl } from '@/api'
-import { Plus, Edit, Delete, UploadFilled } from '@element-plus/icons-vue'
+import { Plus, Edit, Delete, UploadFilled, Warning } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -366,12 +395,29 @@ const editForm = reactive({
   notes: ''
 })
 
+const validateEditCompletedQuantity = (rule, value, callback) => {
+  if (value > editForm.target_quantity) {
+    callback(new Error('已完成数量不能超过目标数量'))
+  } else {
+    callback()
+  }
+}
+
 const rules = {
   name: [{ required: true, message: '请输入作品名称', trigger: 'blur' }],
   project_type: [{ required: true, message: '请选择作品类型', trigger: 'change' }],
   target_quantity: [{ required: true, message: '请输入目标数量', trigger: 'blur' }],
-  completed_quantity: [{ required: true, message: '请输入已完成数量', trigger: 'blur' }],
+  completed_quantity: [
+    { required: true, message: '请输入已完成数量', trigger: 'blur' },
+    { validator: validateEditCompletedQuantity, trigger: 'change' }
+  ],
   status: [{ required: true, message: '请选择状态', trigger: 'change' }]
+}
+
+const validateEditQuantity = () => {
+  if (editFormRef.value) {
+    editFormRef.value.validateField('completed_quantity')
+  }
 }
 
 const materialRules = {
@@ -531,7 +577,7 @@ const submitEdit = async () => {
     editDialogVisible.value = false
     fetchData()
   } catch (err) {
-    ElMessage.error('保存失败')
+    ElMessage.error(err.response?.data?.error || '保存失败')
   }
 }
 
@@ -702,5 +748,14 @@ onMounted(fetchData)
   max-width: 200px;
   max-height: 200px;
   object-fit: contain;
+}
+
+.quantity-hint {
+  font-size: 12px;
+  color: #f44336;
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 </style>

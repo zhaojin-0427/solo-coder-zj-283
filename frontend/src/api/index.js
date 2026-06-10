@@ -53,7 +53,8 @@ export const statisticsApi = {
   utilization: () => api.get('/statistics/utilization'),
   projectTypes: () => api.get('/statistics/project-types'),
   idleMaterials: (params) => api.get('/statistics/idle-materials', { params }),
-  costTrend: () => api.get('/statistics/cost-trend')
+  costTrend: () => api.get('/statistics/cost-trend'),
+  anomalies: () => api.get('/statistics/anomalies')
 }
 
 export default api

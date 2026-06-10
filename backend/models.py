@@ -24,7 +24,21 @@ class Material(db.Model):
     
     usages = db.relationship('MaterialUsage', backref='material', cascade='all, delete-orphan')
     
+    @property
+    def is_used(self):
+        return len(self.usages) > 0
+    
+    @property
+    def used_length_total(self):
+        return sum(usage.used_length + usage.cutting_loss for usage in self.usages)
+    
+    @property
+    def used_by_projects(self):
+        return [{'project_id': usage.project_id, 'project_name': usage.project.name} for usage in self.usages]
+    
     def to_dict(self):
+        usage_rate = 1 - (self.remaining_length / self.total_length) if self.total_length > 0 else 0
+        usage_rate = min(usage_rate, 1.0)
         return {
             'id': self.id,
             'name': self.name,
@@ -40,9 +54,12 @@ class Material(db.Model):
             'notes': self.notes,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
-            'usage_rate': 1 - (self.remaining_length / self.total_length) if self.total_length > 0 else 0,
+            'usage_rate': usage_rate,
             'days_since_purchase': (datetime.utcnow().date() - self.purchase_date).days if self.purchase_date else 0,
-            'total_value': self.remaining_length * self.unit_price
+            'total_value': max(0, self.remaining_length * self.unit_price),
+            'is_used': self.is_used,
+            'used_length_total': self.used_length_total,
+            'used_by_projects': self.used_by_projects
         }
 
 
@@ -65,6 +82,16 @@ class Project(db.Model):
     material_usages = db.relationship('MaterialUsage', backref='project', cascade='all, delete-orphan')
     process_photos = db.relationship('ProcessPhoto', backref='project', cascade='all, delete-orphan')
     
+    @property
+    def progress_percentage(self):
+        if self.target_quantity <= 0:
+            return 0
+        return min(100, round(self.completed_quantity / self.target_quantity * 100))
+    
+    @property
+    def is_over_target(self):
+        return self.completed_quantity > self.target_quantity
+    
     def to_dict(self):
         total_material_cost = sum(usage.total_cost for usage in self.material_usages)
         unit_cost = total_material_cost / self.completed_quantity if self.completed_quantity > 0 else total_material_cost
@@ -85,7 +112,9 @@ class Project(db.Model):
             'total_material_cost': total_material_cost,
             'unit_material_cost': unit_cost,
             'material_count': len(self.material_usages),
-            'photo_count': len(self.process_photos)
+            'photo_count': len(self.process_photos),
+            'progress_percentage': self.progress_percentage,
+            'is_over_target': self.is_over_target
         }
 
 
