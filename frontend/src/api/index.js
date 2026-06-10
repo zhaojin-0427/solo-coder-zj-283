@@ -47,6 +47,15 @@ export const processPhotoApi = {
   delete: (id) => api.delete(`/process-photos/${id}`)
 }
 
+export const orderApi = {
+  list: (params) => api.get('/orders', { params }),
+  get: (id) => api.get(`/orders/${id}`),
+  create: (data) => api.post('/orders', data),
+  update: (id, data) => api.put(`/orders/${id}`, data),
+  delete: (id) => api.delete(`/orders/${id}`),
+  getSuggestedPrice: (id) => api.get(`/orders/${id}/suggested-price`)
+}
+
 export const statisticsApi = {
   overview: () => api.get('/statistics/overview'),
   consumption: () => api.get('/statistics/material-consumption'),
@@ -54,7 +63,9 @@ export const statisticsApi = {
   projectTypes: () => api.get('/statistics/project-types'),
   idleMaterials: (params) => api.get('/statistics/idle-materials', { params }),
   costTrend: () => api.get('/statistics/cost-trend'),
-  anomalies: () => api.get('/statistics/anomalies')
+  anomalies: () => api.get('/statistics/anomalies'),
+  orderOverview: () => api.get('/statistics/order-overview'),
+  orderTrend: () => api.get('/statistics/order-trend')
 }
 
 export default api

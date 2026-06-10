@@ -39,6 +39,16 @@ const routes = [
     path: '/statistics',
     name: 'Statistics',
     component: () => import('@/views/Statistics.vue')
+  },
+  {
+    path: '/orders',
+    name: 'Orders',
+    component: () => import('@/views/Orders.vue')
+  },
+  {
+    path: '/orders/:id',
+    name: 'OrderDetail',
+    component: () => import('@/views/OrderDetail.vue')
   }
 ]
 

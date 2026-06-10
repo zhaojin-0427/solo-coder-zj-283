@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, date
 from flask_sqlalchemy import SQLAlchemy
 
 db = SQLAlchemy()
@@ -193,4 +193,117 @@ class ProcessPhoto(db.Model):
             'description': self.description,
             'experience': self.experience,
             'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
+
+class Order(db.Model):
+    __tablename__ = 'orders'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    customer_name = db.Column(db.String(100), nullable=False)
+    contact_info = db.Column(db.String(200), nullable=False)
+    order_source = db.Column(db.String(50))
+    requirement = db.Column(db.Text)
+    delivery_date = db.Column(db.Date)
+    quoted_price = db.Column(db.Float, default=0)
+    deposit = db.Column(db.Float, default=0)
+    balance = db.Column(db.Float, default=0)
+    status = db.Column(db.String(20), default='pending')
+    notes = db.Column(db.Text)
+    project_id = db.Column(db.Integer, db.ForeignKey('projects.id'))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    project = db.relationship('Project', backref='orders')
+    
+    @property
+    def is_overdue(self):
+        if not self.delivery_date:
+            return False
+        if self.status in ['completed', 'cancelled']:
+            return False
+        return date.today() > self.delivery_date
+    
+    @property
+    def days_until_delivery(self):
+        if not self.delivery_date:
+            return None
+        return (self.delivery_date - date.today()).days
+    
+    @property
+    def material_cost(self):
+        if not self.project:
+            return 0
+        return sum(usage.total_cost for usage in self.project.material_usages)
+    
+    @property
+    def suggested_price(self):
+        cost = self.material_cost
+        if cost <= 0:
+            return 0
+        if cost < 100:
+            return cost * 2.5
+        elif cost < 500:
+            return cost * 2.0
+        else:
+            return cost * 1.8
+    
+    @property
+    def profit_estimate(self):
+        return self.quoted_price - self.material_cost
+    
+    @property
+    def profit_margin(self):
+        if self.quoted_price <= 0:
+            return 0
+        return (self.profit_estimate / self.quoted_price) * 100
+    
+    @property
+    def delivery_risk(self):
+        if self.status in ['completed', 'cancelled']:
+            return 'none'
+        if not self.delivery_date:
+            return 'medium'
+        days_left = self.days_until_delivery
+        if days_left is None:
+            return 'medium'
+        if days_left < 0:
+            return 'high'
+        if self.project and self.project.status != 'completed':
+            progress = self.project.progress_percentage
+            if days_left <= 3 and progress < 80:
+                return 'high'
+            elif days_left <= 7 and progress < 50:
+                return 'high'
+            elif days_left <= 14 and progress < 30:
+                return 'medium'
+        return 'low'
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'customer_name': self.customer_name,
+            'contact_info': self.contact_info,
+            'order_source': self.order_source,
+            'requirement': self.requirement,
+            'delivery_date': self.delivery_date.isoformat() if self.delivery_date else None,
+            'quoted_price': self.quoted_price,
+            'deposit': self.deposit,
+            'balance': self.balance,
+            'status': self.status,
+            'notes': self.notes,
+            'project_id': self.project_id,
+            'project_name': self.project.name if self.project else None,
+            'project_status': self.project.status if self.project else None,
+            'project_progress': self.project.progress_percentage if self.project else 0,
+            'material_cost': self.material_cost,
+            'suggested_price': self.suggested_price,
+            'profit_estimate': self.profit_estimate,
+            'profit_margin': round(self.profit_margin, 2),
+            'is_overdue': self.is_overdue,
+            'days_until_delivery': self.days_until_delivery,
+            'delivery_risk': self.delivery_risk,
+            'photo_count': len(self.project.process_photos) if self.project else 0,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }

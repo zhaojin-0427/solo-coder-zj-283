@@ -3,7 +3,7 @@ from datetime import datetime, date
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
-from models import db, Material, Project, MaterialUsage, ProcessPhoto
+from models import db, Material, Project, MaterialUsage, ProcessPhoto, Order
 from sqlalchemy import func, and_
 
 app = Flask(__name__)
@@ -532,7 +532,9 @@ def get_anomalies():
         'over_target': [],
         'material_conflicts': [],
         'negative_inventory': [],
-        'over_usage_rate': []
+        'over_usage_rate': [],
+        'overdue_orders': [],
+        'high_risk_orders': []
     }
     
     materials = Material.query.all()
@@ -605,16 +607,302 @@ def get_anomalies():
                    len(anomalies['negative_inventory']) + 
                    len(anomalies['over_usage_rate']))
     
+    orders = Order.query.all()
+    for o in orders:
+        if o.is_overdue:
+            anomalies['overdue_orders'].append({
+                'type': 'overdue_order',
+                'order_id': o.id,
+                'customer_name': o.customer_name,
+                'project_name': o.project_name,
+                'days_overdue': -o.days_until_delivery if o.days_until_delivery else 0,
+                'message': f'订单"{o.customer_name}"已逾期 {(-o.days_until_delivery) if o.days_until_delivery else 0} 天'
+            })
+        elif o.delivery_risk == 'high':
+            anomalies['high_risk_orders'].append({
+                'type': 'high_risk_order',
+                'order_id': o.id,
+                'customer_name': o.customer_name,
+                'project_name': o.project_name,
+                'days_until_delivery': o.days_until_delivery,
+                'message': f'订单"{o.customer_name}"交付风险高，仅剩 {o.days_until_delivery} 天'
+            })
+    
+    total_count = (len(anomalies['insufficient_stock']) + 
+                   len(anomalies['over_target']) + 
+                   len(anomalies['material_conflicts']) + 
+                   len(anomalies['negative_inventory']) + 
+                   len(anomalies['over_usage_rate']) +
+                   len(anomalies.get('overdue_orders', [])) +
+                   len(anomalies.get('high_risk_orders', [])))
+    
+    summary = {
+        'insufficient_stock': len(anomalies['insufficient_stock']),
+        'over_target': len(anomalies['over_target']),
+        'material_conflicts': len(anomalies['material_conflicts']),
+        'negative_inventory': len(anomalies['negative_inventory']),
+        'over_usage_rate': len(anomalies['over_usage_rate']),
+        'overdue_orders': len(anomalies.get('overdue_orders', [])),
+        'high_risk_orders': len(anomalies.get('high_risk_orders', []))
+    }
+    
     return jsonify({
         'total_count': total_count,
         'anomalies': anomalies,
-        'summary': {
-            'insufficient_stock': len(anomalies['insufficient_stock']),
-            'over_target': len(anomalies['over_target']),
-            'material_conflicts': len(anomalies['material_conflicts']),
-            'negative_inventory': len(anomalies['negative_inventory']),
-            'over_usage_rate': len(anomalies['over_usage_rate'])
+        'summary': summary
+    })
+
+
+@app.route('/api/orders', methods=['GET'])
+def get_orders():
+    status = request.args.get('status', '')
+    search = request.args.get('search', '')
+    
+    query = Order.query
+    if status:
+        query = query.filter(Order.status == status)
+    if search:
+        query = query.filter(Order.customer_name.contains(search) | Order.requirement.contains(search))
+    
+    orders = query.order_by(Order.created_at.desc()).all()
+    return jsonify([o.to_dict() for o in orders])
+
+
+@app.route('/api/orders/<int:id>', methods=['GET'])
+def get_order(id):
+    order = Order.query.get_or_404(id)
+    data = order.to_dict()
+    if order.project:
+        data['material_usages'] = [u.to_dict() for u in order.project.material_usages]
+        data['process_photos'] = [p.to_dict() for p in sorted(order.project.process_photos, key=lambda x: x.stage_order)]
+    return jsonify(data)
+
+
+@app.route('/api/orders', methods=['POST'])
+def create_order():
+    data = request.get_json()
+    
+    project_id = None
+    if data.get('create_new_project') and data.get('project_name'):
+        project_data = {
+            'name': data['project_name'],
+            'project_type': data.get('project_type', '其他'),
+            'description': data.get('requirement', ''),
+            'start_date': date.today().isoformat(),
+            'target_quantity': data.get('target_quantity', 1),
+            'completed_quantity': 0,
+            'status': 'in_progress' if data.get('status') in ['in_progress', 'confirmed'] else 'in_progress'
         }
+        project = Project(
+            name=project_data['name'],
+            project_type=project_data['project_type'],
+            description=project_data['description'],
+            start_date=date.fromisoformat(project_data['start_date']),
+            target_quantity=project_data['target_quantity'],
+            completed_quantity=project_data['completed_quantity'],
+            status=project_data['status']
+        )
+        db.session.add(project)
+        db.session.flush()
+        project_id = project.id
+    elif data.get('project_id'):
+        project_id = data.get('project_id')
+    
+    order = Order(
+        customer_name=data['customer_name'],
+        contact_info=data['contact_info'],
+        order_source=data.get('order_source'),
+        requirement=data.get('requirement'),
+        delivery_date=date.fromisoformat(data['delivery_date']) if data.get('delivery_date') else None,
+        quoted_price=float(data.get('quoted_price', 0)),
+        deposit=float(data.get('deposit', 0)),
+        balance=float(data.get('balance', 0)),
+        status=data.get('status', 'pending'),
+        notes=data.get('notes'),
+        project_id=project_id
+    )
+    
+    db.session.add(order)
+    db.session.commit()
+    return jsonify(order.to_dict()), 201
+
+
+@app.route('/api/orders/<int:id>', methods=['PUT'])
+def update_order(id):
+    order = Order.query.get_or_404(id)
+    data = request.get_json()
+    
+    old_status = order.status
+    
+    if 'customer_name' in data:
+        order.customer_name = data['customer_name']
+    if 'contact_info' in data:
+        order.contact_info = data['contact_info']
+    if 'order_source' in data:
+        order.order_source = data['order_source']
+    if 'requirement' in data:
+        order.requirement = data['requirement']
+    if 'delivery_date' in data:
+        order.delivery_date = date.fromisoformat(data['delivery_date']) if data['delivery_date'] else None
+    if 'quoted_price' in data:
+        order.quoted_price = float(data['quoted_price'])
+    if 'deposit' in data:
+        order.deposit = float(data['deposit'])
+    if 'balance' in data:
+        order.balance = float(data['balance'])
+    if 'notes' in data:
+        order.notes = data['notes']
+    
+    if 'project_id' in data:
+        if data['project_id'] and not order.project_id:
+            order.project_id = data['project_id']
+        elif data.get('create_new_project') and data.get('project_name'):
+            project_data = {
+                'name': data['project_name'],
+                'project_type': data.get('project_type', '其他'),
+                'description': data.get('requirement', order.requirement or ''),
+                'start_date': date.today().isoformat(),
+                'target_quantity': data.get('target_quantity', 1),
+                'completed_quantity': 0,
+                'status': 'in_progress'
+            }
+            project = Project(
+                name=project_data['name'],
+                project_type=project_data['project_type'],
+                description=project_data['description'],
+                start_date=date.fromisoformat(project_data['start_date']),
+                target_quantity=project_data['target_quantity'],
+                completed_quantity=project_data['completed_quantity'],
+                status=project_data['status']
+            )
+            db.session.add(project)
+            db.session.flush()
+            order.project_id = project.id
+    
+    if 'status' in data and data['status'] != old_status:
+        order.status = data['status']
+        
+        if order.project:
+            if data['status'] in ['in_progress', 'confirmed']:
+                order.project.status = 'in_progress'
+            elif data['status'] == 'ready':
+                order.project.status = 'in_progress'
+            elif data['status'] == 'completed':
+                order.project.status = 'completed'
+                if order.project.completed_quantity == 0:
+                    order.project.completed_quantity = order.project.target_quantity
+            elif data['status'] == 'cancelled':
+                order.project.status = 'paused'
+    
+    db.session.commit()
+    return jsonify(order.to_dict())
+
+
+@app.route('/api/orders/<int:id>', methods=['DELETE'])
+def delete_order(id):
+    order = Order.query.get_or_404(id)
+    db.session.delete(order)
+    db.session.commit()
+    return jsonify({'message': '删除成功'})
+
+
+@app.route('/api/orders/<int:id>/suggested-price', methods=['GET'])
+def get_suggested_price(id):
+    order = Order.query.get_or_404(id)
+    return jsonify({
+        'material_cost': order.material_cost,
+        'suggested_price': order.suggested_price,
+        'profit_estimate': order.suggested_price - order.material_cost,
+        'profit_margin': round(((order.suggested_price - order.material_cost) / order.suggested_price * 100), 2) if order.suggested_price > 0 else 0
+    })
+
+
+@app.route('/api/statistics/order-overview', methods=['GET'])
+def get_order_overview():
+    total_orders = Order.query.count()
+    pending_orders = Order.query.filter_by(status='pending').count()
+    in_progress_orders = Order.query.filter_by(status='in_progress').count()
+    ready_orders = Order.query.filter_by(status='ready').count()
+    completed_orders = Order.query.filter_by(status='completed').count()
+    
+    overdue_orders = Order.query.filter(
+        Order.status.notin_(['completed', 'cancelled']),
+        Order.delivery_date.isnot(None)
+    ).all()
+    overdue_count = sum(1 for o in overdue_orders if o.is_overdue)
+    
+    total_revenue = db.session.query(func.sum(Order.quoted_price)).filter(
+        Order.status == 'completed'
+    ).scalar() or 0
+    
+    total_material_cost = 0
+    total_profit = 0
+    completed_order_list = Order.query.filter_by(status='completed').all()
+    for o in completed_order_list:
+        cost = o.material_cost
+        total_material_cost += cost
+        total_profit += (o.quoted_price - cost)
+    
+    profit_rate = (total_profit / total_revenue * 100) if total_revenue > 0 else 0
+    
+    high_risk_count = sum(1 for o in Order.query.filter(
+        Order.status.notin_(['completed', 'cancelled'])
+    ).all() if o.delivery_risk == 'high')
+    
+    return jsonify({
+        'total_orders': total_orders,
+        'pending_orders': pending_orders,
+        'in_progress_orders': in_progress_orders,
+        'ready_orders': ready_orders,
+        'completed_orders': completed_orders,
+        'overdue_orders': overdue_count,
+        'high_risk_orders': high_risk_count,
+        'total_revenue': round(total_revenue, 2),
+        'total_material_cost': round(total_material_cost, 2),
+        'total_profit': round(total_profit, 2),
+        'profit_rate': round(profit_rate, 2),
+        'pending_delivery': ready_orders
+    })
+
+
+@app.route('/api/statistics/order-trend', methods=['GET'])
+def get_order_trend():
+    months = []
+    revenues = []
+    order_counts = []
+    
+    for i in range(5, -1, -1):
+        month_date = date.today().replace(day=1)
+        if month_date.month - i <= 0:
+            month = month_date.month - i + 12
+            year = month_date.year - 1
+        else:
+            month = month_date.month - i
+            year = month_date.year
+        
+        start_dt = datetime(year, month, 1)
+        if month == 12:
+            end_dt = datetime(year + 1, 1, 1)
+        else:
+            end_dt = datetime(year, month + 1, 1)
+        
+        orders = Order.query.filter(
+            and_(
+                Order.created_at >= start_dt,
+                Order.created_at < end_dt
+            )
+        ).all()
+        
+        revenue = sum(o.quoted_price for o in orders if o.status == 'completed')
+        
+        months.append(f"{year}年{month}月")
+        revenues.append(round(revenue, 2))
+        order_counts.append(len(orders))
+    
+    return jsonify({
+        'months': months,
+        'revenues': revenues,
+        'order_counts': order_counts
     })
 
 

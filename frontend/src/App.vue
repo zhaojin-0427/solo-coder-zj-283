@@ -32,6 +32,10 @@
           <el-icon><Money /></el-icon>
           <span>成本核算</span>
         </el-menu-item>
+        <el-menu-item index="/orders">
+          <el-icon><Tickets /></el-icon>
+          <span>订单管理</span>
+        </el-menu-item>
         <el-menu-item index="/statistics">
           <el-icon><TrendCharts /></el-icon>
           <span>统计分析</span>
@@ -65,11 +69,17 @@ const pageNames = {
   '/projects': '作品档案',
   '/photos': '过程相册',
   '/costs': '成本核算',
+  '/orders': '订单管理',
   '/statistics': '统计分析'
 }
 
 const currentPage = computed(() => {
-  const path = route.path.startsWith('/projects/') ? '/projects' : route.path
+  let path = route.path
+  if (path.startsWith('/projects/')) {
+    path = '/projects'
+  } else if (path.startsWith('/orders/')) {
+    path = '/orders'
+  }
   return pageNames[path] || '首页'
 })
 </script>
