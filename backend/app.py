@@ -753,10 +753,8 @@ def update_order(id):
     if 'notes' in data:
         order.notes = data['notes']
     
-    if 'project_id' in data:
-        if data['project_id'] and not order.project_id:
-            order.project_id = data['project_id']
-        elif data.get('create_new_project') and data.get('project_name'):
+    if 'project_id' in data or data.get('create_new_project'):
+        if data.get('create_new_project') and data.get('project_name'):
             project_data = {
                 'name': data['project_name'],
                 'project_type': data.get('project_type', '其他'),
@@ -778,6 +776,8 @@ def update_order(id):
             db.session.add(project)
             db.session.flush()
             order.project_id = project.id
+        else:
+            order.project_id = data.get('project_id') or None
     
     if 'status' in data and data['status'] != old_status:
         order.status = data['status']
