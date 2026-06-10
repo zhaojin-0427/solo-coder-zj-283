@@ -1,4 +1,4 @@
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from flask_sqlalchemy import SQLAlchemy
 
 db = SQLAlchemy()
@@ -91,16 +91,118 @@ class Project(db.Model):
     
     material_usages = db.relationship('MaterialUsage', backref='project', cascade='all, delete-orphan')
     process_photos = db.relationship('ProcessPhoto', backref='project', cascade='all, delete-orphan')
+    tasks = db.relationship('Task', backref='project', cascade='all, delete-orphan')
     
     @property
     def progress_percentage(self):
         if self.target_quantity <= 0:
             return 0
-        return min(100, round(self.completed_quantity / self.target_quantity * 100))
+        quantity_progress = self.completed_quantity / self.target_quantity * 100
+        
+        if len(self.tasks) > 0:
+            total_hours = sum(t.estimated_hours for t in self.tasks)
+            if total_hours > 0:
+                completed_hours = sum(t.estimated_hours for t in self.tasks if t.status == 'completed')
+                in_progress_hours = sum(t.estimated_hours * 0.5 for t in self.tasks if t.status == 'in_progress')
+                task_progress = (completed_hours + in_progress_hours) / total_hours * 100
+            else:
+                completed = sum(1 for t in self.tasks if t.status == 'completed')
+                task_progress = completed / len(self.tasks) * 100
+            return min(100, round(quantity_progress * 0.3 + task_progress * 0.7))
+        
+        return min(100, round(quantity_progress))
+    
+    @property
+    def task_progress(self):
+        if len(self.tasks) == 0:
+            return None
+        total_hours = sum(t.estimated_hours for t in self.tasks)
+        if total_hours == 0:
+            completed = sum(1 for t in self.tasks if t.status == 'completed')
+            return round(completed / len(self.tasks) * 100, 1)
+        completed_hours = sum(t.estimated_hours for t in self.tasks if t.status == 'completed')
+        in_progress_hours = sum(t.estimated_hours * 0.5 for t in self.tasks if t.status == 'in_progress')
+        return round((completed_hours + in_progress_hours) / total_hours * 100, 1)
     
     @property
     def is_over_target(self):
         return self.completed_quantity > self.target_quantity
+    
+    @property
+    def task_count(self):
+        return len(self.tasks)
+    
+    @property
+    def completed_task_count(self):
+        return sum(1 for t in self.tasks if t.status == 'completed')
+    
+    @property
+    def in_progress_task_count(self):
+        return sum(1 for t in self.tasks if t.status == 'in_progress')
+    
+    @property
+    def delayed_task_count(self):
+        return sum(1 for t in self.tasks if t.status == 'delayed')
+    
+    @property
+    def total_estimated_hours(self):
+        return sum(t.estimated_hours for t in self.tasks)
+    
+    @property
+    def total_actual_hours(self):
+        return sum(t.actual_hours or 0 for t in self.tasks)
+    
+    @property
+    def schedule_conflicts(self):
+        conflicts = []
+        tasks = self.tasks
+        for i in range(len(tasks)):
+            for j in range(i + 1, len(tasks)):
+                t1, t2 = tasks[i], tasks[j]
+                if t1.estimated_start_date and t1.estimated_end_date and \
+                   t2.estimated_start_date and t2.estimated_end_date and \
+                   t1.assignee == t2.assignee and \
+                   t1.status not in ['completed', 'cancelled'] and \
+                   t2.status not in ['completed', 'cancelled']:
+                    if t1.estimated_start_date <= t2.estimated_end_date and \
+                       t2.estimated_start_date <= t1.estimated_end_date:
+                        conflicts.append({
+                            'task1_id': t1.id,
+                            'task1_name': t1.name,
+                            'task2_id': t2.id,
+                            'task2_name': t2.name,
+                            'assignee': t1.assignee,
+                            'overlap_days': (min(t1.estimated_end_date, t2.estimated_end_date) - max(t1.estimated_start_date, t2.estimated_start_date)).days + 1,
+                            'message': f'负责人"{t1.assignee}"在同一时间段有重叠任务'
+                        })
+        return conflicts
+    
+    @property
+    def delay_risk(self):
+        if self.status == 'completed':
+            return 'none'
+        if len(self.tasks) == 0:
+            return 'none'
+        
+        today = date.today()
+        delayed_tasks = self.delayed_task_count
+        
+        if delayed_tasks > 0:
+            return 'high'
+        
+        if self.end_date:
+            days_left = (self.end_date - today).days
+            remaining_hours = sum(t.estimated_hours for t in self.tasks if t.status not in ['completed', 'cancelled'])
+            estimated_days_needed = remaining_hours / 8
+            
+            if days_left < 0:
+                return 'high'
+            elif estimated_days_needed > days_left * 1.5:
+                return 'high'
+            elif estimated_days_needed > days_left:
+                return 'medium'
+        
+        return 'low'
     
     def to_dict(self):
         total_material_cost = sum(usage.total_cost for usage in self.material_usages)
@@ -124,7 +226,16 @@ class Project(db.Model):
             'material_count': len(self.material_usages),
             'photo_count': len(self.process_photos),
             'progress_percentage': self.progress_percentage,
-            'is_over_target': self.is_over_target
+            'is_over_target': self.is_over_target,
+            'task_progress': self.task_progress,
+            'task_count': self.task_count,
+            'completed_task_count': self.completed_task_count,
+            'in_progress_task_count': self.in_progress_task_count,
+            'delayed_task_count': self.delayed_task_count,
+            'total_estimated_hours': self.total_estimated_hours,
+            'total_actual_hours': self.total_actual_hours,
+            'schedule_conflicts': self.schedule_conflicts,
+            'delay_risk': self.delay_risk
         }
 
 
@@ -279,6 +390,92 @@ class Order(db.Model):
                 return 'medium'
         return 'low'
     
+    @property
+    def task_progress(self):
+        if not self.project or len(self.project.tasks) == 0:
+            return None
+        tasks = self.project.tasks
+        total_hours = sum(t.estimated_hours for t in tasks)
+        if total_hours == 0:
+            completed = sum(1 for t in tasks if t.status == 'completed')
+            return completed / len(tasks) * 100
+        completed_hours = sum(t.estimated_hours for t in tasks if t.status == 'completed')
+        in_progress_hours = sum(t.estimated_hours * 0.5 for t in tasks if t.status == 'in_progress')
+        return (completed_hours + in_progress_hours) / total_hours * 100
+
+    @property
+    def task_count(self):
+        if not self.project:
+            return 0
+        return len(self.project.tasks)
+
+    @property
+    def completed_task_count(self):
+        if not self.project:
+            return 0
+        return sum(1 for t in self.project.tasks if t.status == 'completed')
+
+    @property
+    def delayed_task_count(self):
+        if not self.project:
+            return 0
+        return sum(1 for t in self.project.tasks if t.status == 'delayed')
+
+    @property
+    def schedule_conflicts(self):
+        conflicts = []
+        if not self.project:
+            return conflicts
+        tasks = self.project.tasks
+        for i in range(len(tasks)):
+            for j in range(i + 1, len(tasks)):
+                t1, t2 = tasks[i], tasks[j]
+                if t1.estimated_start_date and t1.estimated_end_date and \
+                   t2.estimated_start_date and t2.estimated_end_date and \
+                   t1.assignee == t2.assignee and \
+                   t1.status not in ['completed', 'cancelled'] and \
+                   t2.status not in ['completed', 'cancelled']:
+                    if t1.estimated_start_date <= t2.estimated_end_date and \
+                       t2.estimated_start_date <= t1.estimated_end_date:
+                        conflicts.append({
+                            'task1_id': t1.id,
+                            'task1_name': t1.name,
+                            'task2_id': t2.id,
+                            'task2_name': t2.name,
+                            'assignee': t1.assignee,
+                            'message': f'负责人"{t1.assignee}"在同一时间段有重叠任务'
+                        })
+        return conflicts
+
+    @property
+    def delay_risk(self):
+        if self.status in ['completed', 'cancelled']:
+            return 'none'
+        if not self.project or len(self.project.tasks) == 0:
+            return 'none'
+        
+        today = date.today()
+        total_tasks = len(self.project.tasks)
+        delayed_tasks = self.delayed_task_count
+        remaining_tasks = sum(1 for t in self.project.tasks if t.status not in ['completed', 'cancelled'])
+        
+        if delayed_tasks > 0:
+            return 'high'
+        
+        if self.delivery_date:
+            days_left = (self.delivery_date - today).days
+            remaining_hours = sum(t.estimated_hours for t in self.project.tasks if t.status not in ['completed', 'cancelled'])
+            estimated_days_needed = remaining_hours / 8
+            
+            if days_left < 0:
+                return 'high'
+            elif estimated_days_needed > days_left * 1.5:
+                return 'high'
+            elif estimated_days_needed > days_left:
+                return 'medium'
+        
+        return 'low'
+
     def to_dict(self):
         return {
             'id': self.id,
@@ -304,6 +501,140 @@ class Order(db.Model):
             'days_until_delivery': self.days_until_delivery,
             'delivery_risk': self.delivery_risk,
             'photo_count': len(self.project.process_photos) if self.project else 0,
+            'task_progress': self.task_progress,
+            'task_count': self.task_count,
+            'completed_task_count': self.completed_task_count,
+            'delayed_task_count': self.delayed_task_count,
+            'schedule_conflicts': self.schedule_conflicts,
+            'delay_risk': self.delay_risk,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+        }
+
+
+class Task(db.Model):
+    __tablename__ = 'tasks'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(200), nullable=False)
+    project_id = db.Column(db.Integer, db.ForeignKey('projects.id'))
+    order_id = db.Column(db.Integer, db.ForeignKey('orders.id'))
+    stage = db.Column(db.String(50), nullable=False)
+    estimated_start_date = db.Column(db.Date)
+    estimated_end_date = db.Column(db.Date)
+    estimated_hours = db.Column(db.Float, default=0)
+    actual_hours = db.Column(db.Float, default=0)
+    assignee = db.Column(db.String(100))
+    priority = db.Column(db.String(20), default='medium')
+    status = db.Column(db.String(20), default='pending')
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    order = db.relationship('Order', backref='tasks')
+    
+    @property
+    def is_overdue(self):
+        if self.status in ['completed', 'cancelled']:
+            return False
+        if not self.estimated_end_date:
+            return False
+        return date.today() > self.estimated_end_date
+    
+    @property
+    def days_until_deadline(self):
+        if not self.estimated_end_date:
+            return None
+        return (self.estimated_end_date - date.today()).days
+    
+    @property
+    def progress(self):
+        if self.status == 'completed':
+            return 100
+        elif self.status == 'in_progress':
+            if self.estimated_hours > 0 and self.actual_hours > 0:
+                return min(95, round(self.actual_hours / self.estimated_hours * 100))
+            return 50
+        elif self.status == 'delayed':
+            return 30
+        return 0
+    
+    @property
+    def schedule_conflicts(self):
+        conflicts = []
+        if self.status in ['completed', 'cancelled'] or not self.assignee:
+            return conflicts
+        if not self.estimated_start_date or not self.estimated_end_date:
+            return conflicts
+        
+        query = Task.query.filter(
+            Task.id != self.id,
+            Task.assignee == self.assignee,
+            Task.status.notin_(['completed', 'cancelled']),
+            Task.estimated_start_date.isnot(None),
+            Task.estimated_end_date.isnot(None)
+        )
+        
+        for other in query.all():
+            if self.estimated_start_date <= other.estimated_end_date and \
+               other.estimated_start_date <= self.estimated_end_date:
+                conflicts.append({
+                    'task_id': other.id,
+                    'task_name': other.name,
+                    'assignee': other.assignee,
+                    'overlap_days': (min(self.estimated_end_date, other.estimated_end_date) - 
+                                     max(self.estimated_start_date, other.estimated_start_date)).days + 1,
+                    'message': f'与任务"{other.name}"时间重叠'
+                })
+        
+        return conflicts
+    
+    @property
+    def delay_risk(self):
+        if self.status in ['completed', 'cancelled']:
+            return 'none'
+        if self.status == 'delayed':
+            return 'high'
+        
+        if self.estimated_end_date:
+            days_left = (self.estimated_end_date - date.today()).days
+            remaining_hours = self.estimated_hours - (self.actual_hours or 0)
+            estimated_days_needed = remaining_hours / 8
+            
+            if days_left < 0:
+                return 'high'
+            elif estimated_days_needed > days_left * 1.5:
+                return 'high'
+            elif estimated_days_needed > days_left:
+                return 'medium'
+        
+        if self.priority == 'high' and self.status == 'pending':
+            return 'medium'
+        
+        return 'low'
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'project_id': self.project_id,
+            'project_name': self.project.name if self.project else None,
+            'order_id': self.order_id,
+            'order_customer': self.order.customer_name if self.order else None,
+            'stage': self.stage,
+            'estimated_start_date': self.estimated_start_date.isoformat() if self.estimated_start_date else None,
+            'estimated_end_date': self.estimated_end_date.isoformat() if self.estimated_end_date else None,
+            'estimated_hours': self.estimated_hours,
+            'actual_hours': self.actual_hours,
+            'assignee': self.assignee,
+            'priority': self.priority,
+            'status': self.status,
+            'notes': self.notes,
+            'is_overdue': self.is_overdue,
+            'days_until_deadline': self.days_until_deadline,
+            'progress': self.progress,
+            'schedule_conflicts': self.schedule_conflicts,
+            'delay_risk': self.delay_risk,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }

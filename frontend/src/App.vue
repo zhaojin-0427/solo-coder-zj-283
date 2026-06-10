@@ -36,6 +36,10 @@
           <el-icon><Tickets /></el-icon>
           <span>订单管理</span>
         </el-menu-item>
+        <el-menu-item index="/schedule">
+          <el-icon><Calendar /></el-icon>
+          <span>排期日历</span>
+        </el-menu-item>
         <el-menu-item index="/statistics">
           <el-icon><TrendCharts /></el-icon>
           <span>统计分析</span>
@@ -58,6 +62,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
+import { Calendar } from '@element-plus/icons-vue'
 
 const route = useRoute()
 
@@ -70,6 +75,7 @@ const pageNames = {
   '/photos': '过程相册',
   '/costs': '成本核算',
   '/orders': '订单管理',
+  '/schedule': '排期日历',
   '/statistics': '统计分析'
 }
 

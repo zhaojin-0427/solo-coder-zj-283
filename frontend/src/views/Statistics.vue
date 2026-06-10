@@ -34,6 +34,102 @@
     </el-row>
 
     <el-row :gutter="20" style="margin-top: 20px;">
+      <el-col :span="24">
+        <h3 class="section-title">排期与工时统计</h3>
+      </el-col>
+      <el-col :span="4" v-for="(stat, index) in taskStats" :key="'task-' + index">
+        <el-card class="stat-card" :body-style="{ padding: '20px' }">
+          <div class="stat-content">
+            <div class="stat-icon" :style="{ backgroundColor: stat.color }">
+              <el-icon :size="24" color="white"><component :is="stat.icon" /></el-icon>
+            </div>
+            <div class="stat-info">
+              <div class="stat-label">{{ stat.label }}</div>
+              <div class="stat-value">{{ stat.formatter ? stat.formatter(stat.value) : stat.value }}</div>
+              <div v-if="stat.subLabel" class="stat-sublabel">{{ stat.subLabel }}</div>
+            </div>
+          </div>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <el-card style="margin-top: 20px;">
+      <template #header>
+        <div class="card-header">
+          <span class="card-title">高风险交付排期预警</span>
+          <el-tag type="danger" size="small">风险等级：高</el-tag>
+        </div>
+      </template>
+      <el-alert 
+        v-if="highRiskTasks.length > 0"
+        :title="`发现 ${highRiskTasks.length} 个高风险交付任务，请立即处理`"
+        type="error"
+        show-icon
+        style="margin-bottom: 16px;"
+      />
+      <el-table :data="highRiskTasks" v-loading="loading" border>
+        <el-table-column prop="type" label="类型" width="100" align="center">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.type === 'order' ? 'warning' : 'info'">
+              {{ row.type === 'order' ? '订单' : '作品' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="name" label="名称" min-width="150" />
+        <el-table-column prop="task_name" label="关联任务" min-width="150" />
+        <el-table-column prop="assignee" label="负责人" width="100" />
+        <el-table-column label="截止日期" width="120" align="center">
+          <template #default="{ row }">
+            <span :style="{ color: '#f44336', fontWeight: 'bold' }">{{ row.due_date }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="days_until_due" label="剩余天数" width="100" align="center">
+          <template #default="{ row }">
+            <el-tag type="danger" size="small">{{ row.days_until_due }} 天</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="任务进度" width="150">
+          <template #default="{ row }">
+            <el-progress :percentage="row.task_progress" :stroke-width="6" />
+          </template>
+        </el-table-column>
+        <el-table-column prop="remaining_hours" label="剩余工时" width="100" align="center">
+          <template #default="{ row }">{{ row.remaining_hours }}h</template>
+        </el-table-column>
+        <el-table-column prop="risk_level" label="风险等级" width="100" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.risk_level === 'high' ? 'danger' : 'warning'" size="small">
+              {{ row.risk_level === 'high' ? '高' : '中' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="100" align="center">
+          <template #default="{ row }">
+            <el-button 
+              v-if="row.type === 'order'" 
+              type="primary" 
+              link 
+              size="small" 
+              @click="goToOrder(row.id)"
+            >
+              查看
+            </el-button>
+            <el-button 
+              v-else 
+              type="primary" 
+              link 
+              size="small" 
+              @click="goToProject(row.id)"
+            >
+              查看
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-if="highRiskTasks.length === 0" description="暂无高风险交付任务" />
+    </el-card>
+
+    <el-row :gutter="20" style="margin-top: 20px;">
       <el-col :span="12">
         <el-card>
           <template #header>
@@ -237,7 +333,7 @@ import {
 } from 'chart.js'
 import { useRouter } from 'vue-router'
 import { statisticsApi, getImageUrl } from '@/api'
-import { Collection, Folder, Money, TrendCharts, Warning, Picture, Tickets, Wallet, ShoppingBag, Clock } from '@element-plus/icons-vue'
+import { Collection, Folder, Money, TrendCharts, Warning, Picture, Tickets, Wallet, ShoppingBag, Clock, Calendar, Timer, Histogram, AlarmClock } from '@element-plus/icons-vue'
 
 ChartJS.register(
   CategoryScale,
@@ -262,6 +358,8 @@ const minRemaining = ref(1)
 const orderAlertTab = ref('overdue')
 const overdueOrders = ref([])
 const highRiskOrders = ref([])
+const taskOverview = ref({})
+const highRiskTasks = ref([])
 
 const consumptionChartData = ref(null)
 const utilizationChartData = ref(null)
@@ -285,6 +383,13 @@ const orderStats = [
   { label: '利润率', value: 0, icon: TrendCharts, color: '#795548', formatter: (v) => `${v}%` },
   { label: '待交付', value: 0, icon: Clock, color: '#ff5722' },
   { label: '逾期订单', value: 0, icon: Warning, color: '#f44336' }
+]
+
+const taskStats = [
+  { label: '本周待办任务', value: 0, icon: Calendar, color: '#2196f3' },
+  { label: '累计工时', value: 0, icon: Timer, color: '#9c27b0', formatter: (v) => `${v}h` },
+  { label: '平均单件制作时长', value: 0, icon: Histogram, color: '#00bcd4', formatter: (v) => `${v}h` },
+  { label: '延期任务数量', value: 0, icon: AlarmClock, color: '#f44336' }
 ]
 
 const barOptions = {
@@ -348,7 +453,7 @@ const revenueOptions = {
 const fetchData = async () => {
   loading.value = true
   try {
-    const [overviewRes, consumptionRes, utilizationRes, typeRes, costRes, orderOverviewRes, orderTrendRes, anomaliesRes] = await Promise.all([
+    const [overviewRes, consumptionRes, utilizationRes, typeRes, costRes, orderOverviewRes, orderTrendRes, anomaliesRes, taskOverviewRes] = await Promise.all([
       statisticsApi.overview(),
       statisticsApi.consumption(),
       statisticsApi.utilization(),
@@ -356,7 +461,8 @@ const fetchData = async () => {
       statisticsApi.costTrend(),
       statisticsApi.orderOverview(),
       statisticsApi.orderTrend(),
-      statisticsApi.anomalies()
+      statisticsApi.anomalies(),
+      statisticsApi.taskOverview()
     ])
 
     overview.value = overviewRes.data
@@ -427,6 +533,13 @@ const fetchData = async () => {
     overdueOrders.value = anomaliesRes.data.anomalies?.overdue_orders || []
     highRiskOrders.value = anomaliesRes.data.anomalies?.high_risk_orders || []
 
+    taskOverview.value = taskOverviewRes.data
+    taskStats[0].value = taskOverview.value.week_todo_count || 0
+    taskStats[1].value = taskOverview.value.total_actual_hours || 0
+    taskStats[2].value = taskOverview.value.avg_hours_per_item || 0
+    taskStats[3].value = taskOverview.value.delayed_task_count || 0
+    highRiskTasks.value = taskOverview.value.high_risk_deliveries || []
+
     await fetchIdleMaterials()
   } finally {
     loading.value = false
@@ -447,6 +560,10 @@ const fetchIdleMaterials = async () => {
 
 const goToOrder = (orderId) => {
   router.push(`/orders/${orderId}`)
+}
+
+const goToProject = (projectId) => {
+  router.push(`/projects/${projectId}`)
 }
 
 onMounted(fetchData)
@@ -512,5 +629,14 @@ onMounted(fetchData)
   height: 60px;
   object-fit: cover;
   border-radius: 6px;
+}
+
+.section-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #333;
+  margin: 0 0 16px 0;
+  padding-left: 12px;
+  border-left: 4px solid #e91e63;
 }
 </style>

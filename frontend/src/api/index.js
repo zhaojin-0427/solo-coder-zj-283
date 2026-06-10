@@ -56,6 +56,16 @@ export const orderApi = {
   getSuggestedPrice: (id) => api.get(`/orders/${id}/suggested-price`)
 }
 
+export const taskApi = {
+  list: (params) => api.get('/tasks', { params }),
+  getCalendar: (params) => api.get('/tasks/calendar', { params }),
+  get: (id) => api.get(`/tasks/${id}`),
+  create: (data) => api.post('/tasks', data),
+  update: (id, data) => api.put(`/tasks/${id}`, data),
+  delete: (id) => api.delete(`/tasks/${id}`),
+  getConflicts: () => api.get('/tasks/schedule-conflicts')
+}
+
 export const statisticsApi = {
   overview: () => api.get('/statistics/overview'),
   consumption: () => api.get('/statistics/material-consumption'),
@@ -65,7 +75,8 @@ export const statisticsApi = {
   costTrend: () => api.get('/statistics/cost-trend'),
   anomalies: () => api.get('/statistics/anomalies'),
   orderOverview: () => api.get('/statistics/order-overview'),
-  orderTrend: () => api.get('/statistics/order-trend')
+  orderTrend: () => api.get('/statistics/order-trend'),
+  taskOverview: () => api.get('/statistics/task-overview')
 }
 
 export default api

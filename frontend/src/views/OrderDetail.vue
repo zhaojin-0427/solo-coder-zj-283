@@ -124,6 +124,121 @@
                 {{ projectStatusMap[order?.project_status] }}
               </el-tag>
             </div>
+
+            <el-alert 
+              v-if="order?.schedule_conflicts?.length > 0"
+              :title="`发现 ${order.schedule_conflicts.length} 个排期冲突`"
+              type="error"
+              show-icon
+              style="margin: 16px 0;"
+            >
+              <template #default>
+                <div v-for="(conflict, index) in order.schedule_conflicts" :key="index" class="conflict-item">
+                  <el-icon color="#f44336"><Warning /></el-icon>
+                  <span>{{ conflict.message }}</span>
+                </div>
+              </template>
+            </el-alert>
+
+            <el-alert 
+              v-if="order?.delay_risk === 'high'"
+              title="延期风险高！请及时调整排期"
+              type="error"
+              show-icon
+              style="margin: 16px 0;"
+            />
+            <el-alert 
+              v-else-if="order?.delay_risk === 'medium'"
+              title="存在延期风险，请留意任务进度"
+              type="warning"
+              show-icon
+              style="margin: 16px 0;"
+            />
+
+            <div v-if="order?.task_count > 0" class="task-summary">
+              <div class="summary-item">
+                <div class="summary-label">任务进度</div>
+                <div class="summary-value">
+                  <el-progress 
+                    :percentage="order.task_progress || 0" 
+                    :stroke-width="8"
+                    color="#2196f3"
+                    style="width: 200px;"
+                  />
+                  <span style="margin-left: 12px;">
+                    {{ order.completed_task_count || 0 }} / {{ order.task_count }} 已完成
+                  </span>
+                  <el-tag v-if="order.delayed_task_count > 0" type="danger" size="small" style="margin-left: 8px;">
+                    {{ order.delayed_task_count }} 个延期
+                  </el-tag>
+                </div>
+              </div>
+            </div>
+
+            <div class="tab-header" style="margin-top: 20px;">
+              <span class="section-title">制作任务</span>
+              <el-button type="primary" size="small" @click="openTaskDialog">
+                <el-icon><Plus /></el-icon>
+                新建任务
+              </el-button>
+            </div>
+            <el-table :data="orderTasks" v-loading="loading" border>
+              <el-table-column prop="name" label="任务名称" min-width="150">
+                <template #default="{ row }">
+                  <div class="task-name-cell">
+                    <el-tag :type="priorityType(row.priority)" size="small" style="margin-right: 8px;">
+                      {{ priorityMap[row.priority] }}
+                    </el-tag>
+                    <span>{{ row.name }}</span>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column prop="stage" label="制作阶段" width="100" />
+              <el-table-column label="预计时间" width="200">
+                <template #default="{ row }">
+                  <div v-if="row.estimated_start_date && row.estimated_end_date">
+                    <div>{{ row.estimated_start_date }}</div>
+                    <div class="text-muted">至 {{ row.estimated_end_date }}</div>
+                  </div>
+                  <span v-else>-</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="工时" width="100" align="center">
+                <template #default="{ row }">
+                  <div>{{ row.actual_hours || 0 }} / {{ row.estimated_hours }}h</div>
+                </template>
+              </el-table-column>
+              <el-table-column prop="assignee" label="负责人" width="100" />
+              <el-table-column label="状态" width="100" align="center">
+                <template #default="{ row }">
+                  <el-tag :type="taskStatusType(row.status)" size="small">
+                    {{ taskStatusMap[row.status] }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="进度" width="120">
+                <template #default="{ row }">
+                  <el-progress :percentage="row.progress" :stroke-width="6" />
+                </template>
+              </el-table-column>
+              <el-table-column label="风险" width="80" align="center">
+                <template #default="{ row }">
+                  <el-tag v-if="row.delay_risk === 'high'" type="danger" size="small">高</el-tag>
+                  <el-tag v-else-if="row.delay_risk === 'medium'" type="warning" size="small">中</el-tag>
+                  <el-tag v-else-if="row.delay_risk === 'low'" type="info" size="small">低</el-tag>
+                  <span v-else>-</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="180" align="center" fixed="right">
+                <template #default="{ row }">
+                  <el-button link size="small" @click="editOrderTask(row)">编辑</el-button>
+                  <el-button link size="small" type="primary" @click="updateOrderTaskStatus(row)">
+                    更新状态
+                  </el-button>
+                  <el-button link size="small" type="danger" @click="deleteOrderTask(row)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
             <el-timeline v-if="order?.process_photos?.length" class="photo-timeline">
               <el-timeline-item
                 v-for="(photo, index) in sortedPhotos"
@@ -409,6 +524,128 @@
         <el-button type="primary" @click="submitEdit">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog 
+      v-model="taskDialogVisible" 
+      :title="isEditTask ? '编辑任务' : '新建任务'"
+      width="500px"
+    >
+      <el-form :model="taskForm" ref="taskFormRef" :rules="taskRules" label-width="100px">
+        <el-form-item label="任务名称" prop="name">
+          <el-input v-model="taskForm.name" placeholder="请输入任务名称" />
+        </el-form-item>
+        <el-form-item label="制作阶段" prop="stage">
+          <el-select v-model="taskForm.stage" style="width: 100%;">
+            <el-option v-for="s in taskStages" :key="s" :label="s" :value="s" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="预计开始">
+          <el-date-picker 
+            v-model="taskForm.estimated_start_date" 
+            type="date" 
+            style="width: 100%;"
+            value-format="YYYY-MM-DD"
+            placeholder="选择日期"
+          />
+        </el-form-item>
+        <el-form-item label="预计结束">
+          <el-date-picker 
+            v-model="taskForm.estimated_end_date" 
+            type="date" 
+            style="width: 100%;"
+            value-format="YYYY-MM-DD"
+            placeholder="选择日期"
+          />
+        </el-form-item>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="预计工时">
+              <el-input-number 
+                v-model="taskForm.estimated_hours" 
+                :min="0" 
+                :precision="1" 
+                style="width: 100%;" 
+              />
+              <span class="form-hint">小时</span>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="实际工时">
+              <el-input-number 
+                v-model="taskForm.actual_hours" 
+                :min="0" 
+                :precision="1" 
+                style="width: 100%;" 
+              />
+              <span class="form-hint">小时</span>
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="负责人">
+              <el-input v-model="taskForm.assignee" placeholder="请输入负责人" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="优先级">
+              <el-select v-model="taskForm.priority" style="width: 100%;">
+                <el-option label="高" value="high" />
+                <el-option label="中" value="medium" />
+                <el-option label="低" value="low" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item label="状态">
+          <el-select v-model="taskForm.status" style="width: 100%;">
+            <el-option v-for="(label, value) in taskStatusMap" :key="value" :label="label" :value="value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="taskForm.notes" type="textarea" :rows="2" placeholder="可填写任务说明" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="taskDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitTask">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog 
+      v-model="taskStatusDialogVisible" 
+      title="更新任务状态"
+      width="400px"
+    >
+      <div class="status-update-content">
+        <div class="task-info">
+          <span>{{ editingTask?.name }}</span>
+          <el-tag :type="taskStatusType(editingTask?.status)" size="small">
+            当前：{{ taskStatusMap[editingTask?.status] }}
+          </el-tag>
+        </div>
+        <el-form label-width="100px">
+          <el-form-item label="新状态">
+            <el-select v-model="newTaskStatus" style="width: 100%;">
+              <el-option v-for="(label, value) in taskStatusMap" :key="value" :label="label" :value="value" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="实际工时">
+            <el-input-number 
+              v-model="newTaskActualHours" 
+              :min="0" 
+              :precision="1" 
+              style="width: 100%;" 
+            />
+            <span class="form-hint">小时</span>
+          </el-form-item>
+        </el-form>
+      </div>
+      <template #footer>
+        <el-button @click="taskStatusDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitTaskStatus">更新</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -416,8 +653,8 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { orderApi, projectApi, getImageUrl, formatDate } from '@/api'
-import { Edit, Delete, Money, Wallet, TrendCharts, ShoppingBag } from '@element-plus/icons-vue'
+import { orderApi, projectApi, taskApi, getImageUrl, formatDate } from '@/api'
+import { Edit, Delete, Money, Wallet, TrendCharts, ShoppingBag, Plus, Warning } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -428,10 +665,74 @@ const order = ref(null)
 const activeTab = ref('progress')
 const newStatus = ref('')
 const availableProjects = ref([])
+const orderTasks = ref([])
 
 const editDialogVisible = ref(false)
 const editFormRef = ref(null)
 const editLinkType = ref('none')
+const taskDialogVisible = ref(false)
+const taskStatusDialogVisible = ref(false)
+const taskFormRef = ref(null)
+
+const isEditTask = ref(false)
+const editingTaskId = ref(null)
+const editingTask = ref(null)
+const newTaskStatus = ref('')
+const newTaskActualHours = ref(0)
+
+const taskStages = ['设计稿', '裁剪', '缝纫', '熨烫', '装饰', '成品', '其他']
+
+const taskStatusMap = {
+  'pending': '待开始',
+  'in_progress': '进行中',
+  'completed': '已完成',
+  'delayed': '已延期',
+  'cancelled': '已取消'
+}
+
+const priorityMap = {
+  'high': '高',
+  'medium': '中',
+  'low': '低'
+}
+
+const taskStatusType = (status) => {
+  const map = {
+    'pending': 'info',
+    'in_progress': 'primary',
+    'completed': 'success',
+    'delayed': 'danger',
+    'cancelled': 'info'
+  }
+  return map[status] || 'info'
+}
+
+const priorityType = (priority) => {
+  const map = {
+    'high': 'danger',
+    'medium': 'warning',
+    'low': 'info'
+  }
+  return map[priority] || 'info'
+}
+
+const taskForm = reactive({
+  name: '',
+  stage: '',
+  estimated_start_date: null,
+  estimated_end_date: null,
+  estimated_hours: 0,
+  actual_hours: 0,
+  assignee: '',
+  priority: 'medium',
+  status: 'pending',
+  notes: ''
+})
+
+const taskRules = {
+  name: [{ required: true, message: '请输入任务名称', trigger: 'blur' }],
+  stage: [{ required: true, message: '请选择制作阶段', trigger: 'change' }]
+}
 
 const orderSources = ['微信', '淘宝', '闲鱼', '抖音', '线下门店', '朋友介绍', '其他']
 const projectTypes = ['服装', '包包', '家居装饰', '玩偶', '拼布', '刺绣', '其他']
@@ -521,16 +822,112 @@ const editRules = {
 const fetchData = async () => {
   loading.value = true
   try {
-    const [orderRes, projectsRes] = await Promise.all([
+    const [orderRes, projectsRes, tasksRes] = await Promise.all([
       orderApi.get(orderId.value),
-      projectApi.list()
+      projectApi.list(),
+      taskApi.list({ order_id: orderId.value })
     ])
     order.value = orderRes.data
     newStatus.value = order.value.status
     availableProjects.value = projectsRes.data
+    orderTasks.value = tasksRes.data
   } finally {
     loading.value = false
   }
+}
+
+const openTaskDialog = () => {
+  isEditTask.value = false
+  editingTaskId.value = null
+  Object.assign(taskForm, {
+    name: '',
+    stage: '',
+    estimated_start_date: null,
+    estimated_end_date: null,
+    estimated_hours: 0,
+    actual_hours: 0,
+    assignee: '',
+    priority: 'medium',
+    status: 'pending',
+    notes: ''
+  })
+  taskDialogVisible.value = true
+}
+
+const editOrderTask = (task) => {
+  isEditTask.value = true
+  editingTaskId.value = task.id
+  Object.assign(taskForm, {
+    name: task.name,
+    stage: task.stage,
+    estimated_start_date: task.estimated_start_date ? new Date(task.estimated_start_date) : null,
+    estimated_end_date: task.estimated_end_date ? new Date(task.estimated_end_date) : null,
+    estimated_hours: task.estimated_hours,
+    actual_hours: task.actual_hours || 0,
+    assignee: task.assignee || '',
+    priority: task.priority,
+    status: task.status,
+    notes: task.notes || ''
+  })
+  taskDialogVisible.value = true
+}
+
+const submitTask = async () => {
+  if (!taskFormRef.value) return
+  await taskFormRef.value.validate()
+  
+  const data = {
+    ...taskForm,
+    order_id: orderId.value,
+    estimated_start_date: taskForm.estimated_start_date ? formatDate(taskForm.estimated_start_date) : null,
+    estimated_end_date: taskForm.estimated_end_date ? formatDate(taskForm.estimated_end_date) : null
+  }
+  
+  try {
+    if (isEditTask.value) {
+      await taskApi.update(editingTaskId.value, data)
+      ElMessage.success('更新成功')
+    } else {
+      await taskApi.create(data)
+      ElMessage.success('创建成功')
+    }
+    taskDialogVisible.value = false
+    fetchData()
+  } catch (err) {
+    ElMessage.error(err.response?.data?.error || '保存失败')
+  }
+}
+
+const updateOrderTaskStatus = (task) => {
+  editingTask.value = task
+  newTaskStatus.value = task.status
+  newTaskActualHours.value = task.actual_hours || 0
+  taskStatusDialogVisible.value = true
+}
+
+const submitTaskStatus = async () => {
+  if (!editingTask.value) return
+  
+  try {
+    await taskApi.update(editingTask.value.id, {
+      status: newTaskStatus.value,
+      actual_hours: newTaskActualHours.value
+    })
+    ElMessage.success('状态更新成功')
+    taskStatusDialogVisible.value = false
+    fetchData()
+  } catch (err) {
+    ElMessage.error('更新失败')
+  }
+}
+
+const deleteOrderTask = async (task) => {
+  try {
+    await ElMessageBox.confirm(`确定删除任务"${task.name}"吗？`, '提示', { type: 'warning' })
+    await taskApi.delete(task.id)
+    ElMessage.success('删除成功')
+    fetchData()
+  } catch {}
 }
 
 const updateStatus = async () => {
@@ -792,5 +1189,68 @@ onMounted(fetchData)
   font-size: 22px;
   font-weight: 600;
   color: #333;
+}
+
+.task-summary {
+  background: #f9f9f9;
+  padding: 16px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.summary-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.summary-label {
+  font-size: 14px;
+  color: #666;
+  margin-right: 16px;
+}
+
+.summary-value {
+  display: flex;
+  align-items: center;
+  flex: 1;
+}
+
+.task-name-cell {
+  display: flex;
+  align-items: center;
+}
+
+.text-muted {
+  color: #999;
+  font-size: 12px;
+}
+
+.conflict-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  font-size: 13px;
+}
+
+.form-hint {
+  font-size: 12px;
+  color: #999;
+  margin-left: 8px;
+}
+
+.status-update-content {
+  padding: 12px 0;
+}
+
+.task-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px;
+  background: #f5f5f5;
+  border-radius: 8px;
+  margin-bottom: 16px;
 }
 </style>

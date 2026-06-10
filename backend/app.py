@@ -1,9 +1,9 @@
 import os
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
-from models import db, Material, Project, MaterialUsage, ProcessPhoto, Order
+from models import db, Material, Project, MaterialUsage, ProcessPhoto, Order, Task
 from sqlalchemy import func, and_
 
 app = Flask(__name__)
@@ -903,6 +903,349 @@ def get_order_trend():
         'months': months,
         'revenues': revenues,
         'order_counts': order_counts
+    })
+
+
+@app.route('/api/tasks', methods=['GET'])
+def get_tasks():
+    status = request.args.get('status', '')
+    priority = request.args.get('priority', '')
+    assignee = request.args.get('assignee', '')
+    project_id = request.args.get('project_id', '')
+    order_id = request.args.get('order_id', '')
+    start_date = request.args.get('start_date', '')
+    end_date = request.args.get('end_date', '')
+    
+    query = Task.query
+    if status:
+        query = query.filter(Task.status == status)
+    if priority:
+        query = query.filter(Task.priority == priority)
+    if assignee:
+        query = query.filter(Task.assignee.contains(assignee))
+    if project_id:
+        query = query.filter(Task.project_id == int(project_id))
+    if order_id:
+        query = query.filter(Task.order_id == int(order_id))
+    if start_date:
+        query = query.filter(Task.estimated_start_date >= date.fromisoformat(start_date))
+    if end_date:
+        query = query.filter(Task.estimated_end_date <= date.fromisoformat(end_date))
+    
+    tasks = query.order_by(Task.created_at.desc()).all()
+    return jsonify([t.to_dict() for t in tasks])
+
+
+@app.route('/api/tasks/calendar', methods=['GET'])
+def get_tasks_calendar():
+    start_date = request.args.get('start_date', '')
+    end_date = request.args.get('end_date', '')
+    
+    query = Task.query
+    if start_date:
+        query = query.filter(Task.estimated_end_date >= date.fromisoformat(start_date))
+    if end_date:
+        query = query.filter(Task.estimated_start_date <= date.fromisoformat(end_date))
+    
+    tasks = query.order_by(Task.estimated_start_date).all()
+    
+    events = []
+    for t in tasks:
+        color = '#e91e63'
+        if t.status == 'completed':
+            color = '#4caf50'
+        elif t.status == 'in_progress':
+            color = '#2196f3'
+        elif t.status == 'delayed':
+            color = '#f44336'
+        elif t.priority == 'high':
+            color = '#ff9800'
+        
+        events.append({
+            'id': t.id,
+            'title': t.name,
+            'start': t.estimated_start_date.isoformat() if t.estimated_start_date else None,
+            'end': t.estimated_end_date.isoformat() if t.estimated_end_date else None,
+            'status': t.status,
+            'priority': t.priority,
+            'assignee': t.assignee,
+            'project_id': t.project_id,
+            'project_name': t.project_name,
+            'order_id': t.order_id,
+            'order_customer': t.order_customer,
+            'progress': t.progress,
+            'color': color,
+            'extendedProps': t.to_dict()
+        })
+    
+    return jsonify(events)
+
+
+@app.route('/api/tasks/<int:id>', methods=['GET'])
+def get_task(id):
+    task = Task.query.get_or_404(id)
+    return jsonify(task.to_dict())
+
+
+@app.route('/api/tasks', methods=['POST'])
+def create_task():
+    data = request.get_json()
+    
+    if not data.get('name'):
+        return jsonify({'error': '任务名称不能为空'}), 400
+    if not data.get('stage'):
+        return jsonify({'error': '制作阶段不能为空'}), 400
+    
+    task = Task(
+        name=data['name'],
+        project_id=data.get('project_id'),
+        order_id=data.get('order_id'),
+        stage=data['stage'],
+        estimated_start_date=date.fromisoformat(data['estimated_start_date']) if data.get('estimated_start_date') else None,
+        estimated_end_date=date.fromisoformat(data['estimated_end_date']) if data.get('estimated_end_date') else None,
+        estimated_hours=float(data.get('estimated_hours', 0)),
+        actual_hours=float(data.get('actual_hours', 0)),
+        assignee=data.get('assignee'),
+        priority=data.get('priority', 'medium'),
+        status=data.get('status', 'pending'),
+        notes=data.get('notes')
+    )
+    
+    db.session.add(task)
+    db.session.flush()
+    
+    if task.order_id and not task.project_id:
+        order = Order.query.get(task.order_id)
+        if order and order.project_id:
+            task.project_id = order.project_id
+    
+    db.session.commit()
+    return jsonify(task.to_dict()), 201
+
+
+@app.route('/api/tasks/<int:id>', methods=['PUT'])
+def update_task(id):
+    task = Task.query.get_or_404(id)
+    data = request.get_json()
+    
+    old_status = task.status
+    
+    if 'name' in data:
+        task.name = data['name']
+    if 'project_id' in data:
+        task.project_id = data.get('project_id') or None
+    if 'order_id' in data:
+        task.order_id = data.get('order_id') or None
+    if 'stage' in data:
+        task.stage = data['stage']
+    if 'estimated_start_date' in data:
+        task.estimated_start_date = date.fromisoformat(data['estimated_start_date']) if data['estimated_start_date'] else None
+    if 'estimated_end_date' in data:
+        task.estimated_end_date = date.fromisoformat(data['estimated_end_date']) if data['estimated_end_date'] else None
+    if 'estimated_hours' in data:
+        task.estimated_hours = float(data['estimated_hours'])
+    if 'actual_hours' in data:
+        task.actual_hours = float(data['actual_hours'])
+    if 'assignee' in data:
+        task.assignee = data.get('assignee') or None
+    if 'priority' in data:
+        task.priority = data['priority']
+    if 'notes' in data:
+        task.notes = data.get('notes')
+    
+    if 'status' in data and data['status'] != old_status:
+        task.status = data['status']
+        
+        if task.project_id:
+            project = Project.query.get(task.project_id)
+            if project:
+                all_tasks = project.tasks
+                non_cancelled_tasks = [t for t in all_tasks if t.status != 'cancelled']
+                if len(non_cancelled_tasks) > 0:
+                    all_completed = all(t.status == 'completed' for t in non_cancelled_tasks)
+                    any_in_progress = any(t.status in ['in_progress', 'delayed'] for t in non_cancelled_tasks)
+                    
+                    if all_completed:
+                        project.status = 'completed'
+                        if project.completed_quantity == 0:
+                            project.completed_quantity = project.target_quantity
+                    elif any_in_progress:
+                        if project.status == 'pending' or project.status == 'paused':
+                            project.status = 'in_progress'
+        
+        if task.order_id:
+            order = Order.query.get(task.order_id)
+            if order:
+                all_tasks = order.tasks
+                non_cancelled_tasks = [t for t in all_tasks if t.status != 'cancelled']
+                if len(non_cancelled_tasks) > 0:
+                    all_completed = all(t.status == 'completed' for t in non_cancelled_tasks)
+                    any_delayed = any(t.status == 'delayed' for t in non_cancelled_tasks)
+                    
+                    if all_completed:
+                        if order.status not in ['completed', 'cancelled']:
+                            order.status = 'ready'
+                    elif any_delayed and order.status not in ['completed', 'cancelled']:
+                        if order.status == 'pending':
+                            order.status = 'in_progress'
+    
+    if task.order_id and not task.project_id:
+        order = Order.query.get(task.order_id)
+        if order and order.project_id:
+            task.project_id = order.project_id
+    
+    db.session.commit()
+    return jsonify(task.to_dict())
+
+
+@app.route('/api/tasks/<int:id>', methods=['DELETE'])
+def delete_task(id):
+    task = Task.query.get_or_404(id)
+    db.session.delete(task)
+    db.session.commit()
+    return jsonify({'message': '删除成功'})
+
+
+@app.route('/api/tasks/schedule-conflicts', methods=['GET'])
+def get_schedule_conflicts():
+    conflicts = []
+    tasks = Task.query.filter(
+        Task.status.notin_(['completed', 'cancelled']),
+        Task.estimated_start_date.isnot(None),
+        Task.estimated_end_date.isnot(None)
+    ).all()
+    
+    for i in range(len(tasks)):
+        for j in range(i + 1, len(tasks)):
+            t1, t2 = tasks[i], tasks[j]
+            if t1.assignee and t1.assignee == t2.assignee:
+                if t1.estimated_start_date <= t2.estimated_end_date and \
+                   t2.estimated_start_date <= t1.estimated_end_date:
+                    overlap_days = (min(t1.estimated_end_date, t2.estimated_end_date) - 
+                                    max(t1.estimated_start_date, t2.estimated_start_date)).days + 1
+                    conflicts.append({
+                        'task1': t1.to_dict(),
+                        'task2': t2.to_dict(),
+                        'assignee': t1.assignee,
+                        'overlap_days': overlap_days,
+                        'message': f'负责人"{t1.assignee}"在同一时间段有重叠任务'
+                    })
+    
+    return jsonify(conflicts)
+
+
+@app.route('/api/statistics/task-overview', methods=['GET'])
+def get_task_overview():
+    today = date.today()
+    week_start = today - timedelta(days=today.weekday())
+    week_end = week_start + timedelta(days=6)
+    
+    total_tasks = Task.query.count()
+    pending_tasks = Task.query.filter_by(status='pending').count()
+    in_progress_tasks = Task.query.filter_by(status='in_progress').count()
+    completed_tasks = Task.query.filter_by(status='completed').count()
+    delayed_tasks = Task.query.filter_by(status='delayed').count()
+    
+    this_week_tasks = Task.query.filter(
+        Task.estimated_start_date >= week_start,
+        Task.estimated_start_date <= week_end
+    ).count()
+    
+    total_estimated_hours = db.session.query(func.sum(Task.estimated_hours)).scalar() or 0
+    total_actual_hours = db.session.query(func.sum(Task.actual_hours)).scalar() or 0
+    
+    completed_projects = Project.query.filter_by(status='completed').all()
+    total_completed_pieces = sum(p.completed_quantity for p in completed_projects)
+    total_hours_for_completed = 0
+    for p in completed_projects:
+        total_hours_for_completed += sum(t.actual_hours or t.estimated_hours for t in p.tasks)
+    
+    avg_piece_hours = total_hours_for_completed / total_completed_pieces if total_completed_pieces > 0 else 0
+    
+    high_risk_count = 0
+    high_risk_deliveries = []
+    
+    orders = Order.query.filter(
+        Order.status.notin_(['completed', 'cancelled']),
+        Order.delivery_date.isnot(None)
+    ).all()
+    
+    for o in orders:
+        risk = o.delay_risk
+        if risk == 'high':
+            high_risk_count += 1
+            remaining_hours = sum(
+                (t.estimated_hours or 0) - (t.actual_hours or 0)
+                for t in o.tasks if t.status not in ['completed', 'cancelled']
+            )
+            high_risk_tasks = [t for t in o.tasks if t.status not in ['completed', 'cancelled']]
+            task_name = high_risk_tasks[0].name if high_risk_tasks else '未分配'
+            assignee = high_risk_tasks[0].assignee if high_risk_tasks and high_risk_tasks[0].assignee else '未分配'
+            
+            high_risk_deliveries.append({
+                'type': 'order',
+                'id': o.id,
+                'name': o.customer_name,
+                'task_name': task_name,
+                'assignee': assignee,
+                'due_date': o.delivery_date.isoformat() if o.delivery_date else None,
+                'days_until_due': o.days_until_delivery,
+                'task_progress': o.task_progress,
+                'remaining_hours': round(max(0, remaining_hours), 1),
+                'risk_level': risk
+            })
+    
+    projects = Project.query.filter(
+        Project.status.notin_(['completed', 'cancelled'])
+    ).all()
+    
+    for p in projects:
+        risk = p.delay_risk
+        if risk == 'high':
+            high_risk_count += 1
+            remaining_hours = sum(
+                (t.estimated_hours or 0) - (t.actual_hours or 0)
+                for t in p.tasks if t.status not in ['completed', 'cancelled']
+            )
+            high_risk_tasks = [t for t in p.tasks if t.status not in ['completed', 'cancelled']]
+            task_name = high_risk_tasks[0].name if high_risk_tasks else '未分配'
+            assignee = high_risk_tasks[0].assignee if high_risk_tasks and high_risk_tasks[0].assignee else '未分配'
+            due_date = None
+            days_until_due = 0
+            if high_risk_tasks and high_risk_tasks[0].estimated_end_date:
+                due_date = high_risk_tasks[0].estimated_end_date.isoformat()
+                days_until_due = (high_risk_tasks[0].estimated_end_date - today).days
+            
+            high_risk_deliveries.append({
+                'type': 'project',
+                'id': p.id,
+                'name': p.name,
+                'task_name': task_name,
+                'assignee': assignee,
+                'due_date': due_date,
+                'days_until_due': days_until_due,
+                'task_progress': p.task_progress,
+                'remaining_hours': round(max(0, remaining_hours), 1),
+                'risk_level': risk
+            })
+    
+    high_risk_deliveries.sort(key=lambda x: x['days_until_due'])
+    
+    return jsonify({
+        'total_tasks': total_tasks,
+        'pending_tasks': pending_tasks,
+        'in_progress_tasks': in_progress_tasks,
+        'completed_tasks': completed_tasks,
+        'delayed_tasks': delayed_tasks,
+        'this_week_tasks': this_week_tasks,
+        'total_estimated_hours': round(total_estimated_hours, 2),
+        'total_actual_hours': round(total_actual_hours, 2),
+        'avg_piece_hours': round(avg_piece_hours, 2),
+        'high_risk_delivery_count': high_risk_count,
+        'high_risk_deliveries': high_risk_deliveries,
+        'week_todo_count': this_week_tasks,
+        'avg_hours_per_item': round(avg_piece_hours, 2),
+        'delayed_task_count': delayed_tasks
     })
 
 
